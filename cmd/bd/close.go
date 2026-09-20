@@ -261,7 +261,16 @@ the flags appear in the command line.`,
 			postCloseStore = results[0].Store
 		}
 
-		if suggestNext && len(resolvedIDs) == 1 && closedForCommand {
+		// Say what this close released, every time, not only when asked.
+		// Closing an issue takes down every fence that rested on it, and a work
+		// pool can hand the released issues out within minutes. A release
+		// nobody sees is how a fence gets dropped with nothing going red.
+		// (bd duplicate and bd supersede move the fences instead; a plain close
+		// has no survivor to move them to, so all it can do is say so.)
+		// --json output is unchanged unless --suggest-next asks for it, so
+		// nothing that parses this command breaks.
+		reportUnblocked := suggestNext || !jsonOutput
+		if reportUnblocked && len(resolvedIDs) == 1 && closedForCommand {
 			unblocked, err := postCloseStore.GetNewlyUnblockedByClose(ctx, resolvedIDs[0])
 			if err == nil && len(unblocked) > 0 {
 				if jsonOutput {
@@ -394,7 +403,7 @@ func init() {
 	closeCmd.Flags().BoolP("force", "f", false, "Force close pinned issues or unsatisfied gates")
 	closeCmd.Flags().Bool("continue", false, "Auto-advance to next step in molecule")
 	closeCmd.Flags().Bool("no-auto", false, "With --continue, show next step but don't claim it")
-	closeCmd.Flags().Bool("suggest-next", false, "Show newly unblocked issues after closing")
+	closeCmd.Flags().Bool("suggest-next", false, "Include newly unblocked issues in --json output (plain output always shows them)")
 	closeCmd.Flags().Bool("claim-next", false, "Automatically claim the next highest priority available issue")
 	closeCmd.Flags().String("session", "", "Claude Code session ID (or set CLAUDE_SESSION_ID env var)")
 	closeCmd.ValidArgsFunction = issueIDCompletion

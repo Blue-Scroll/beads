@@ -121,6 +121,75 @@ func TestEmbeddedDuplicate(t *testing.T) {
 		}
 	})
 
+	// ===== Fences move onto the canonical =====
+	//
+	// This is the whole safety of the command. Closing the duplicate used to
+	// take down every fence that rested on it, and a work pool could hand the
+	// released issue out within minutes with nothing going red.
+
+	t.Run("fences_move_onto_canonical", func(t *testing.T) {
+		canonical := bdCreate(t, bd, dir, "Canon fence", "--type", "task")
+		dupe := bdCreate(t, bd, dir, "Dupe fence", "--type", "task")
+		blocked := bdCreate(t, bd, dir, "Held behind the dupe", "--type", "task")
+		bdDepAdd(t, bd, dir, blocked.ID, dupe.ID)
+
+		out := bdDuplicate(t, bd, dir, dupe.ID, "--of", canonical.ID)
+		if !strings.Contains(out, blocked.ID) {
+			t.Errorf("the move should be printed, got: %s", out)
+		}
+
+		s := openStore(t, beadsDir, "du")
+		edges, err := s.GetDependenciesWithMetadata(t.Context(), blocked.ID)
+		if err != nil {
+			t.Fatalf("GetDependenciesWithMetadata: %v", err)
+		}
+		heldBehind := map[string]string{}
+		for _, d := range edges {
+			heldBehind[d.ID] = string(d.DependencyType)
+		}
+		if heldBehind[canonical.ID] != "blocks" {
+			t.Errorf("%s should now be held behind %s, got %v", blocked.ID, canonical.ID, heldBehind)
+		}
+		if _, still := heldBehind[dupe.ID]; still {
+			t.Errorf("the dead edge to %s should be gone, got %v", dupe.ID, heldBehind)
+		}
+	})
+
+	// ===== Error: a closed canonical cannot hold a fence =====
+
+	t.Run("error_closed_canonical_holding_fences", func(t *testing.T) {
+		canonical := bdCreate(t, bd, dir, "Canon already closed", "--type", "task")
+		bdClose(t, bd, dir, canonical.ID)
+		dupe := bdCreate(t, bd, dir, "Dupe of a closed canon", "--type", "task")
+		blocked := bdCreate(t, bd, dir, "Held behind that dupe", "--type", "task")
+		bdDepAdd(t, bd, dir, blocked.ID, dupe.ID)
+
+		out := bdDuplicateFail(t, bd, dir, dupe.ID, "--of", canonical.ID)
+		if !strings.Contains(out, "already closed") {
+			t.Errorf("the refusal should say why, got: %s", out)
+		}
+
+		// Nothing was written: the duplicate is still open and still holds.
+		s := openStore(t, beadsDir, "du")
+		issue, err := s.GetIssue(t.Context(), dupe.ID)
+		if err != nil {
+			t.Fatalf("GetIssue: %v", err)
+		}
+		if issue.Status == "closed" {
+			t.Errorf("%s was closed by a run that refused", dupe.ID)
+		}
+	})
+
+	// ===== A closed canonical with nothing held is fine =====
+
+	t.Run("closed_canonical_with_no_fences_is_allowed", func(t *testing.T) {
+		canonical := bdCreate(t, bd, dir, "Old closed canon", "--type", "task")
+		bdClose(t, bd, dir, canonical.ID)
+		dupe := bdCreate(t, bd, dir, "Old dupe", "--type", "task")
+
+		bdDuplicate(t, bd, dir, dupe.ID, "--of", canonical.ID)
+	})
+
 	// ===== Error: same ID =====
 
 	t.Run("error_same_id", func(t *testing.T) {

@@ -1,9 +1,13 @@
 package main
 
 import (
+	"context"
 	"fmt"
+	"io"
+	"os"
 
 	"github.com/spf13/cobra"
+	"github.com/steveyegge/beads/internal/deps"
 	"github.com/steveyegge/beads/internal/metrics"
 	"github.com/steveyegge/beads/internal/types"
 	"github.com/steveyegge/beads/internal/ui"
@@ -19,6 +23,12 @@ var duplicateCmd = &cobra.Command{
 The duplicate issue is automatically closed with a reference to the canonical.
 This is essential for large issue databases with many similar reports.
 
+Anything held back behind the duplicate is moved onto the canonical issue
+first, so closing the duplicate never releases work nobody cleared. Only
+blocking edges move, and only for open issues. If the canonical issue is itself
+closed while something is still held back, the command refuses and writes
+nothing: a closed issue holds nothing back.
+
 Examples:
   bd duplicate bd-abc --of bd-xyz    # Mark bd-abc as duplicate of bd-xyz`,
 	Args: cobra.ExactArgs(1),
@@ -33,6 +43,12 @@ var supersedeCmd = &cobra.Command{
 
 The superseded issue is automatically closed with a reference to the replacement.
 Useful for design docs, specs, and evolving artifacts.
+
+Anything held back behind the superseded issue is moved onto the replacement
+first, so closing it never releases work nobody cleared. Only blocking edges
+move, and only for open issues. If the replacement is itself closed while
+something is still held back, the command refuses and writes nothing: a closed
+issue holds nothing back.
 
 Examples:
   bd supersede bd-old --with bd-new    # Mark bd-old as superseded by bd-new`,
@@ -97,6 +113,14 @@ func runDuplicate(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("canonical issue not found: %s", canonicalID)
 	}
 
+	// Move the fences BEFORE anything closes. Everything held back behind the
+	// duplicate is released the moment it closes, and a work pool can hand a
+	// released issue out within minutes with nothing going red.
+	moved, err := moveFences(ctx, store, duplicateID, canonical, actor)
+	if err != nil {
+		return err
+	}
+
 	// Add a "duplicates" dependency edge (duplicate → canonical)
 	dep := &types.Dependency{
 		IssueID:     duplicateID,
@@ -123,10 +147,12 @@ func runDuplicate(cmd *cobra.Command, args []string) error {
 			"duplicate": duplicateID,
 			"canonical": canonicalID,
 			"status":    "closed",
+			"moved":     moved,
 		})
 	}
 
 	fmt.Printf("%s Marked %s as duplicate of %s (closed)\n", ui.RenderPass("✓"), duplicateID, canonicalID)
+	printFenceMoves(os.Stdout, moved, canonicalID)
 	return nil
 }
 
@@ -170,6 +196,12 @@ func runSupersede(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("replacement issue not found: %s", newID)
 	}
 
+	// Move the fences BEFORE anything closes. See runDuplicate above.
+	moved, err := moveFences(ctx, store, oldID, newIssue, actor)
+	if err != nil {
+		return err
+	}
+
 	// Add a "supersedes" dependency edge (old → new)
 	dep := &types.Dependency{
 		IssueID:     oldID,
@@ -196,9 +228,52 @@ func runSupersede(cmd *cobra.Command, args []string) error {
 			"superseded":  oldID,
 			"replacement": newID,
 			"status":      "closed",
+			"moved":       moved,
 		})
 	}
 
 	fmt.Printf("%s Marked %s as superseded by %s (closed)\n", ui.RenderPass("✓"), oldID, newID)
+	printFenceMoves(os.Stdout, moved, newID)
 	return nil
+}
+
+// moveFences re-points everything that is held back behind dyingID so that it
+// is held behind the survivor instead. Both duplicate and supersede call it,
+// because both close an issue that other work may be waiting on.
+//
+// A half-done run is still reported: the moves that landed go to stderr before
+// the error, so nobody has to guess which fences are where.
+func moveFences(ctx context.Context, store deps.RetargetStore, dyingID string, survivor *types.Issue, actor string) ([]deps.Move, error) {
+	moved, err := deps.Retarget(ctx, store, dyingID, survivor, actor)
+	if len(moved) > 0 {
+		commandDidWrite.Store(true)
+	}
+	if err != nil {
+		printFenceMoves(os.Stderr, moved, survivor.ID)
+		return moved, err
+	}
+	if moved == nil {
+		// Never nil. A --json reader should see an empty list, not null.
+		moved = []deps.Move{}
+	}
+	return moved, nil
+}
+
+// printFenceMoves says what moved. A move nobody can see is how a dropped
+// fence stays invisible.
+func printFenceMoves(w io.Writer, moved []deps.Move, survivorID string) {
+	if len(moved) == 0 {
+		return
+	}
+	fmt.Fprintf(w, "  Moved %d fence(s) onto %s, so nothing was released:\n", len(moved), survivorID)
+	for _, m := range moved {
+		switch m.Kind {
+		case deps.MoveDroppedSelf:
+			fmt.Fprintf(w, "    %s: dropped its %s edge (it IS %s, so there is no new edge)\n", m.Dependent, m.Type, survivorID)
+		case deps.MoveAlreadyHeld:
+			fmt.Fprintf(w, "    %s: already held behind %s, dropped the old %s edge\n", m.Dependent, survivorID, m.Type)
+		default:
+			fmt.Fprintf(w, "    %s: %s now points at %s\n", m.Dependent, m.Type, survivorID)
+		}
+	}
 }

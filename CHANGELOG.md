@@ -141,6 +141,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`bd duplicate` and `bd supersede` dropped every fence instead of moving
+  it.** Both commands closed the dying issue and did nothing about the issues
+  held back behind it. Those holds came down the moment it closed, and a work
+  pool could hand a released issue out within minutes. Nothing went red,
+  because a released issue looks exactly like an issue that was never blocked.
+
+  Both commands now move the fences onto the surviving issue FIRST
+  (`internal/deps.Retarget`), one edge at a time, new edge before old, so the
+  hold never lifts even for a moment. Rules, each one deliberate:
+
+  - Only blocking edges move (`blocks`, `conditional-blocks`, `waits-for`).
+    parent-child is a hierarchy, not a fence, and re-parenting somebody's tree
+    is a judgement call, not a repair.
+  - Only open dependents move. A closed issue's edges are the record of what
+    really blocked what, and it is not going back in a work pool.
+  - A closed survivor is REFUSED while anything is still held back, and nothing
+    is written. A closed issue holds nothing back, so moving a fence onto one
+    releases the dependents just as surely as dropping it. With nothing held
+    back there is nothing to lose, so that case still works.
+  - A waits-for edge carries its gate metadata across, byte for byte. A stored
+    waits-for row is never allowed to have empty metadata.
+  - Every move is printed, and listed under `moved` in `--json`.
+
+- **`bd close` now says what it released.** A close takes down every fence that
+  rested on the issue. That list was only available behind `--suggest-next`, so
+  the usual close said nothing at all. Plain output now always shows the newly
+  unblocked issues. `--json` output is unchanged unless `--suggest-next` asks
+  for the list, so nothing that parses this command breaks.
+
 - **Proxied-server CI shard 1 flake: `TestProxiedServerCleanDatabases` ran a
   server-global destructive command against the shared test container**
   (p1-9lf, hazard tracked in p1-8dz). The test used the shared external Dolt
