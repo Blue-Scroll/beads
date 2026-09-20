@@ -379,7 +379,7 @@ bd close [id...] [flags]
   -r, --reason string        Reason for closing
       --reason-file string   Read close reason from file (use - for stdin)
       --session string       Claude Code session ID (or set CLAUDE_SESSION_ID env var)
-      --suggest-next         Show newly unblocked issues after closing
+      --suggest-next         Include newly unblocked issues in --json output (plain output always shows them)
 ```
 
 ### bd comment
@@ -1956,6 +1956,12 @@ Mark an issue as a duplicate of a canonical issue.
 The duplicate issue is automatically closed with a reference to the canonical.
 This is essential for large issue databases with many similar reports.
 
+Anything held back behind the duplicate is moved onto the canonical issue
+first, so closing the duplicate never releases work nobody cleared. Only
+blocking edges move, and only for open issues. If the canonical issue is itself
+closed while something is still held back, the command refuses and writes
+nothing: a closed issue holds nothing back.
+
 Examples:
   bd duplicate bd-abc --of bd-xyz    # Mark bd-abc as duplicate of bd-xyz
 
@@ -2090,6 +2096,12 @@ Mark an issue as superseded by a newer version.
 
 The superseded issue is automatically closed with a reference to the replacement.
 Useful for design docs, specs, and evolving artifacts.
+
+Anything held back behind the superseded issue is moved onto the replacement
+first, so closing it never releases work nobody cleared. Only blocking edges
+move, and only for open issues. If the replacement is itself closed while
+something is still held back, the command refuses and writes nothing: a closed
+issue holds nothing back.
 
 Examples:
   bd supersede bd-old --with bd-new    # Mark bd-old as superseded by bd-new
