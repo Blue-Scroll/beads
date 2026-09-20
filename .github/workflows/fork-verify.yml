@@ -1,0 +1,101 @@
+name: fork-verify
+
+# Fork-only CI for the town's beads fork. It is the ONLY workflow this repo
+# runs on a WIP branch.
+#
+# WHY IT EXISTS. Every other workflow here is upstream's, and every one of them
+# triggers on `main` or on a pull request to `main` (read pr.yml and main.yml).
+# The town does not open pull requests against this fork: a `bd` fix branches
+# from `town`, and the mayor pushes it straight onto `town`. So before this
+# file, a `fix/` branch pushed here ran NOTHING, and the mayor landed the town's
+# own issue tracker with no signal at all. The sibling fork Blue-Scroll/gascity
+# carries the same file and runs it on every fix branch. This fork did not
+# (vn-qinjzl0).
+#
+# WHAT IT IS AND IS NOT. It is a fast compile-and-smoke gate, not a copy of
+# upstream's CI. Upstream's PR graph needs a Dolt sql-server, Docker images,
+# Windows and macOS runners and repository secrets, none of which a fork branch
+# has. Everything below runs on one ubuntu-latest runner with no services and
+# no secrets, so it gives a real green/red in minutes instead of a red that
+# only means "a fork cannot run this".
+#
+# EVERY `go` INVOCATION CARRIES -tags=gms_pure_go. That is the repo's ICU
+# policy (engdocs/ICU-POLICY.md, .buildflags): go-mysql-server links ICU under
+# cgo, beads never uses SQL REGEXP, and an untagged build drags the ICU linkage
+# back in. scripts/check-build-tags.sh below is the guard for that policy, and
+# it reads THIS file too, so an untagged `go` line added here fails this
+# workflow rather than rotting.
+
+on:
+  push:
+    branches: ["feat/**", "fix/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    # Upstream already runs the complete CI graph on its own branches. This
+    # lightweight stand-in exists only for forks, which cannot reach those
+    # runners, services or secrets.
+    if: ${{ github.repository != 'gastownhall/beads' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: 'go.mod'
+
+      # Cheap, and it grades this workflow file as well. Keep it first so a
+      # tagging mistake fails in seconds instead of after a full build.
+      - name: Check build-tag policy (ICU)
+        run: ./scripts/check-build-tags.sh
+
+      - name: Check gofmt
+        run: make fmt-check
+
+      # The whole tree, with cgo on, which is how the town builds `bd`. This is
+      # the step that catches a compile error anywhere in the repo.
+      - name: Build (compiles the whole tree)
+        run: go build -tags gms_pure_go ./...
+
+      # NO `go vet` STEP, ON PURPOSE. Nothing in this repo runs vet today:
+      # .golangci.yml sets `default: none` and never enables govet, and no
+      # workflow or Makefile target calls it. So a vet step added here could
+      # arrive RED on code nobody touched, which is the one way to teach the
+      # mayor to ignore this workflow. Add it only after measuring it green on
+      # `town` first.
+
+      # CGO_ENABLED=0 compiles are the cheap way to prove the test tree is not
+      # broken. cmd/bd mixes cgo-only test helpers with pure-Go tests, so an
+      # untagged test file that reaches a cgo-only helper breaks the whole
+      # package's pure-Go compile and silently neuters these tests. Upstream
+      # locks that down in pr.yml; a fork branch gets the same protection here.
+      - name: Compile pure-Go test binaries (CGO_ENABLED=0)
+        env:
+          CGO_ENABLED: "0"
+        run: |
+          go test -tags gms_pure_go -c -o /tmp/bd-cmd-puregeo-test ./cmd/bd
+          go test -tags gms_pure_go -c -o /tmp/bd-embeddeddolt-puregeo-test ./internal/storage/embeddeddolt
+          go test -tags gms_pure_go -c -o /tmp/bd-tracker-puregeo-test ./internal/tracker
+
+      # A real test run, not just a compile. This is upstream's own subset from
+      # pr.yml, and that job installs no Dolt and starts no service, so it is
+      # measured to run on a bare runner. Add a name to this list only after
+      # checking the same.
+      - name: Run the pure-Go cmd/bd subset (CGO_ENABLED=0)
+        env:
+          CGO_ENABLED: "0"
+        run: |
+          go test -tags gms_pure_go -count=1 -short -run '^Test(Help|CheckRemoteSafety|FormatDestroyToken|ShouldWireInitRemote|ExtractPrefix|IsNumericID|GetWorktreeGitDir|DriftItemStatuses|RunDriftChecks|IsServerProbablyRunning|CheckHooksDriftNotGitRepo|CheckServerDriftNoBeadsDir|CheckRemoteDriftNoBeadsDir)' ./cmd/bd
+
+      # DELIBERATELY NOT RUN HERE: the storage, uow and tracker suites. Upstream
+      # runs them in pr.yml with a Dolt CLI installed and a Dolt sql-server
+      # image pulled. A fork runner has neither, and a step that goes red
+      # because the runner lacks a service teaches a reader to ignore this
+      # workflow. Their test trees are still COMPILED above, which is the part
+      # a `bd` fix usually breaks. Widen this only on evidence that a suite
+      # really does skip itself with no server, not on the hope that it does.
