@@ -153,6 +153,9 @@ func runCreateProxiedSingle(_ *cobra.Command, ctx context.Context, in createInpu
 		fmt.Printf("  Priority: P%d\n", created.Priority)
 		fmt.Printf("  Status: %s\n", created.Status)
 	}
+	// After the output above, so the create reads first. Advisory only:
+	// it writes to stderr and never changes the exit code. See create_check.go.
+	runCreateCheck(created)
 	return nil
 }
 

@@ -62,6 +62,11 @@ var YamlOnlyKeys = map[string]bool{
 
 	// Create command settings
 	"create.require-description": true,
+	// create.check-command is a shell command bd RUNS. In the database it
+	// would be pushed to every remote, and anyone who can write an issue
+	// could make every other creator run it. It stays local, like a hook.
+	"create.check-command": true,
+	"create.check-timeout": true,
 
 	// Prime memory-injection caps (read at session start, possibly before
 	// the database is reachable, so they must live in yaml)

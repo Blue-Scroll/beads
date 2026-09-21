@@ -59,5 +59,6 @@ func runQuickProxiedServer(cmd *cobra.Command, ctx context.Context, args []strin
 	commandDidWrite.Store(true)
 
 	fmt.Println(res.ID)
+	runCreateCheck(res) // advisory, stderr only; see create_check.go
 	return nil
 }
