@@ -594,6 +594,10 @@ var createCmd = &cobra.Command{
 			maybeShowTip(store)
 		}
 
+		// After the output above, so the create reads first. Advisory only:
+		// it writes to stderr and never changes the exit code.
+		runCreateCheck(issue)
+
 		SetLastTouchedID(issue.ID)
 		return nil
 	},

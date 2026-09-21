@@ -98,6 +98,7 @@ Example:
 		commandDidWrite.Store(true)
 
 		fmt.Println(issue.ID)
+		runCreateCheck(issue) // advisory, stderr only; see create_check.go
 		return nil
 	},
 }

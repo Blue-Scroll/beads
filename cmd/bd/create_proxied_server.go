@@ -166,6 +166,8 @@ func runCreateProxiedSingle(_ *cobra.Command, ctx context.Context, in createInpu
 		fmt.Printf("  Priority: P%d\n", res.Priority)
 		fmt.Printf("  Status: %s\n", res.Status)
 	}
+	// Advisory only: stderr, never the exit code. See create_check.go.
+	runCreateCheck(res)
 	return nil
 }
 
