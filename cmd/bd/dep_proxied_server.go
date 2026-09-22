@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -19,6 +20,24 @@ type depAddResult struct {
 	toTitle   string
 	cycles    [][]*types.Issue
 	cycleErr  error
+}
+
+// requireProxiedDepTarget refuses a depends-on target this database cannot
+// read. The proxied add paths resolve nothing before they write, so without
+// this they store any id at all, including a typo, as an unreadable target
+// that counts and never fences. The embedded and server paths get the same
+// refusal from resolveIDWithRouting in dep.go (vn-wzy43u5).
+func requireProxiedDepTarget(ctx context.Context, uw uow.UnitOfWork, fromID, toID string) error {
+	if IsExternalRef(toID) {
+		return nil
+	}
+	if issue, err := uw.IssueUseCase().GetIssue(ctx, toID); err == nil && issue != nil {
+		return nil
+	}
+	if wisp, err := uw.IssueUseCase().GetWisp(ctx, toID); err == nil && wisp != nil {
+		return nil
+	}
+	return unresolvableDepTargetError(fromID, toID, errors.New("not found in this database"))
 }
 
 func proxiedLookupTitle(ctx context.Context, uw uow.UnitOfWork, id string) string {
@@ -171,6 +190,9 @@ func runDepAddProxiedServer(cmd *cobra.Command, ctx context.Context, args []stri
 	noCycleCheck, _ := cmd.Flags().GetBool("no-cycle-check")
 
 	res, err := uow.RunTxResult(ctx, uowProvider, func(ctx context.Context, uw uow.UnitOfWork) (depAddResult, string, error) {
+		if err := requireProxiedDepTarget(ctx, uw, fromID, toID); err != nil {
+			return depAddResult{}, "", err
+		}
 		dep := &types.Dependency{IssueID: fromID, DependsOnID: toID, Type: dt}
 		if _, err := uw.DependencyUseCase().AddDependencies(ctx, []*types.Dependency{dep}, actor, domain.BulkAddDepsOpts{}); err != nil {
 			return depAddResult{}, "", err
@@ -251,6 +273,11 @@ func runDepAddBulkProxied(cmd *cobra.Command, ctx context.Context, file, default
 		cycleErr error
 	}
 	res, err := uow.RunTxResult(ctx, uowProvider, func(ctx context.Context, uw uow.UnitOfWork) (bulkResult, string, error) {
+		for _, dep := range deps {
+			if err := requireProxiedDepTarget(ctx, uw, dep.IssueID, dep.DependsOnID); err != nil {
+				return bulkResult{}, "", err
+			}
+		}
 		if _, err := uw.DependencyUseCase().AddDependencies(ctx, deps, actor, domain.BulkAddDepsOpts{
 			SkipPerEdgeCycleCheck: noCycleCheck,
 		}); err != nil {

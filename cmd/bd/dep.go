@@ -98,6 +98,42 @@ func isDisallowedHierarchicalDependency(fromID, toID string, depType types.Depen
 	return depType != types.DepParentChild || toID != immediateParent
 }
 
+// unresolvableDepTargetError is the one refusal every "bd dep add" door gives
+// when the depends-on target is an id this database cannot read and is not an
+// external: reference.
+//
+// Why a refusal and not a stored edge. Such a target is written into
+// dependencies.depends_on_external, and nothing joins that column back to a
+// real row. The three readers then disagree about the same edge:
+//
+//	dependency_count  counts the row                     -> 1
+//	bd show           joins issues and drops the row     -> no Dependencies
+//	bd blocked/ready  the is_blocked union has no leg
+//	                  for depends_on_external            -> still ready
+//
+// So the edge reads as a fence to whoever added it and reads as ready to
+// everything that hands out work. Measured on 2026-09-22: 20 such rows across
+// the town's ledgers, 9 of them on issues still open, every one of them a
+// fence its filer believed in (vn-wzy43u5).
+//
+// This fires only where the target resolved to nothing. A target that DOES
+// resolve, including one a prefix route finds in another database, is
+// untouched. "bd dep remove" keeps the old pass-through on purpose, because
+// the rows already written can only be removed by naming them.
+func unresolvableDepTargetError(fromID, target string, cause error) error {
+	return fmt.Errorf(`cannot add dependency %s -> %s: no issue with that id is in this database, and %q is not an "external:" reference (%v)
+
+Storing it would raise dependency_count by one and fence nothing: bd show would
+not list it, bd blocked would not name %s, and bd ready would still hand it out.
+
+If the target is a capability in another project, say so:
+  bd dep add %s external:<project>:<capability>
+
+If the blocker only exists in another database, this tool cannot fence on it.
+Hold the issue instead (a hold label your pool honors, or bd defer) and write
+the blocker id in a note.`, fromID, target, target, cause, fromID, fromID)
+}
+
 // warnIfCyclesExist checks for dependency cycles and prints a warning if found.
 func warnIfCyclesExist(s storage.DoltStorage) {
 	if s == nil {
@@ -256,6 +292,12 @@ The depends-on-id can be:
   - A local issue ID (e.g., bd-xyz)
   - An external reference: external:<project>:<capability>
 
+An id this database cannot read is REFUSED, whatever its prefix. bd can only
+store such a target in a column nothing joins back to a row, so the edge would
+raise dependency_count and fence nothing. Name a real issue, or say it is an
+external capability. "bd dep remove" still takes one, so an edge written
+before this refusal existed can be deleted.
+
 For bulk wiring, pass newline-delimited JSON with --file. Each line must be an
 object with "from" and "to" fields, and may include "type". The aliases
 "issue_id" and "depends_on_id" are also accepted. Use --file - to read stdin.
@@ -366,16 +408,13 @@ Examples:
 			var toCleanup func()
 			toID, _, toCleanup, err = resolveIDWithRouting(ctx, store, dependsOnArg)
 			if err != nil {
-				srcPrefix := types.ExtractPrefix(fromID)
-				tgtPrefix := types.ExtractPrefix(dependsOnArg)
-				if srcPrefix != "" && tgtPrefix != "" && srcPrefix != tgtPrefix {
-					toID = dependsOnArg
-				} else {
-					return HandleErrorRespectJSON("resolving dependency ID %s: %v", dependsOnArg, err)
-				}
-			} else {
-				defer toCleanup()
+				// A target that resolves to nothing is refused, whatever its
+				// prefix. This used to pass a different-prefix id straight
+				// through, which wrote an edge that counted and never fenced
+				// (vn-wzy43u5). See unresolvableDepTargetError.
+				return HandleErrorRespectJSON("%v", unresolvableDepTargetError(fromID, dependsOnArg, err))
 			}
+			defer toCleanup()
 		}
 
 		dt := canonicalDependencyType(types.DependencyType(depType))
@@ -662,18 +701,13 @@ func validateBulkDepEdges(ctx context.Context, edges []bulkDepEdge) ([]bulkDepEd
 		} else {
 			toID, _, toCleanup, err := resolveIDWithRouting(ctx, store, edge.DependsOnID)
 			if err != nil {
-				srcPrefix := types.ExtractPrefix(current.IssueID)
-				tgtPrefix := types.ExtractPrefix(edge.DependsOnID)
-				if srcPrefix != "" && tgtPrefix != "" && srcPrefix != tgtPrefix {
-					toID = edge.DependsOnID
-				} else {
-					errs = append(errs, fmt.Sprintf("line %d: resolving dependency ID %s: %v", edge.Line, edge.DependsOnID, err))
-					resolved = append(resolved, current)
-					continue
-				}
-			} else {
-				current.Cleanups = append(current.Cleanups, toCleanup)
+				// Same refusal as the single add above: a target that resolves
+				// to nothing is never stored, whatever its prefix (vn-wzy43u5).
+				errs = append(errs, fmt.Sprintf("line %d: %v", edge.Line, unresolvableDepTargetError(current.IssueID, edge.DependsOnID, err)))
+				resolved = append(resolved, current)
+				continue
 			}
+			current.Cleanups = append(current.Cleanups, toCleanup)
 			current.DependsOnID = toID
 		}
 
@@ -963,6 +997,10 @@ var depRemoveCmd = &cobra.Command{
 			var toCleanup func()
 			toID, _, toCleanup, err = resolveIDWithRouting(ctx, store, args[1])
 			if err != nil {
+				// REMOVE keeps the different-prefix pass-through that ADD lost
+				// in vn-wzy43u5. The rows already written by the old add path
+				// point at ids this database cannot read, so naming one is the
+				// only way to delete it. Refusing here would strand them.
 				srcPrefix := types.ExtractPrefix(fromID)
 				tgtPrefix := types.ExtractPrefix(args[1])
 				if srcPrefix != "" && tgtPrefix != "" && srcPrefix != tgtPrefix {
