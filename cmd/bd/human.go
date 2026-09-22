@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"slices"
 	"strings"
@@ -110,8 +111,17 @@ By default closed, pinned, and other done/frozen beads are hidden; use
 --status to select specific statuses, or --status=all to include every
 status.
 
+Every row prints its Status, and the header prints how many beads are still
+waiting on a person. Read that number. Do not count rows yourself.
+
+A bead waits on a human until it is CLOSED, so --status=open is not the
+waiting list: it hides in_progress, blocked and deferred beads that nobody
+has answered. Use --waiting for every bead that still needs an answer,
+whatever its status.
+
 Examples:
   bd human list
+  bd human list --waiting
   bd human list --status=closed
   bd human list --status=all
   bd human list --json`,
@@ -126,10 +136,25 @@ Examples:
 		}()
 
 		status, _ := cmd.Flags().GetString("status")
+		waiting, _ := cmd.Flags().GetBool("waiting")
+
+		if waiting && status != "" {
+			return HandleErrorRespectJSON("--waiting and --status ask two different questions: use one. --waiting is every bead that is not closed")
+		}
+		if waiting {
+			// Every status, then keep what is not closed: the default listing
+			// hides frozen statuses such as deferred, and those beads are
+			// still somebody's unanswered question (hq-vjm31n).
+			status = "all"
+		}
 
 		issues, err := humanIssues(rootCtx, status)
 		if err != nil {
 			return HandleErrorRespectJSON("listing human beads: %v", err)
+		}
+
+		if waiting {
+			issues = filterWaitingOnHuman(issues)
 		}
 
 		if jsonOutput {
@@ -196,6 +221,58 @@ func humanListFilter(status string, cfg workapi.ListConfig) (types.IssueFilter, 
 	return workapi.BuildListFilter(humanListRequest(status), cfg)
 }
 
+// isWaitingOnHuman says whether a bead still needs a person to answer it.
+// A bead waits until it is closed. Every other status (open, in_progress,
+// blocked, deferred, hooked) is still somebody's question. The list and the
+// stats both call this, so the two surfaces can never disagree about a count.
+func isWaitingOnHuman(issue *types.Issue) bool {
+	return issue.Status != types.StatusClosed
+}
+
+// filterWaitingOnHuman keeps only the beads that still need an answer.
+func filterWaitingOnHuman(issues []*types.Issue) []*types.Issue {
+	kept := make([]*types.Issue, 0, len(issues))
+	for _, issue := range issues {
+		if isWaitingOnHuman(issue) {
+			kept = append(kept, issue)
+		}
+	}
+	return kept
+}
+
+// humanWaitingSummary is the one line that answers "how many decisions are
+// waiting?" without anybody counting rows by hand. Read this number instead of
+// grepping the rows below it.
+func humanWaitingSummary(issues []*types.Issue) string {
+	waiting := 0
+	answered := 0
+	byStatus := map[types.Status]int{}
+	var order []types.Status
+
+	for _, issue := range issues {
+		if !isWaitingOnHuman(issue) {
+			answered++
+			continue
+		}
+		waiting++
+		if byStatus[issue.Status] == 0 {
+			order = append(order, issue.Status)
+		}
+		byStatus[issue.Status]++
+	}
+
+	parts := make([]string, 0, len(order))
+	for _, st := range order {
+		parts = append(parts, fmt.Sprintf("%s %d", st, byStatus[st]))
+	}
+
+	summary := fmt.Sprintf("Waiting on a human: %d", waiting)
+	if len(parts) > 0 {
+		summary += fmt.Sprintf(" (%s)", strings.Join(parts, ", "))
+	}
+	return summary + fmt.Sprintf(". Already answered: %d.", answered)
+}
+
 // warnIfNotHumanLabeled warns on stderr when the bead lacks the 'human'
 // label. The check is advisory — respond/dismiss act on whichever bead the
 // user named. The issue must carry its labels; anything returned by
@@ -207,29 +284,43 @@ func warnIfNotHumanLabeled(issue *types.Issue) {
 }
 
 func printHumanList(issues []*types.Issue) {
+	fprintHumanList(os.Stdout, issues)
+}
+
+// fprintHumanList writes the list to w. It takes a writer so a test can read
+// what a person actually sees; a printer that only writes to stdout can only
+// be tested for "it did not panic", which is how the missing Status line
+// below survived (hq-vjm31n).
+func fprintHumanList(w io.Writer, issues []*types.Issue) {
 	if len(issues) == 0 {
-		fmt.Println("No human-needed beads found.")
+		fmt.Fprintln(w, "No human-needed beads found.")
 		return
 	}
 
-	fmt.Printf("\n%s (%d found)\n\n", ui.RenderBold("Human-needed beads"), len(issues))
+	fmt.Fprintf(w, "\n%s (%d found)\n", ui.RenderBold("Human-needed beads"), len(issues))
+	fmt.Fprintf(w, "  %s\n\n", humanWaitingSummary(issues))
 	for _, issue := range issues {
 		if issue.Status == types.StatusClosed {
 			// Closed items fade to muted gray, matching bd list/query. They
 			// only appear under an explicit --status, so the fade is what
 			// distinguishes them from the work still waiting on a person.
-			fmt.Printf("  %s\n", ui.RenderClosedLine(fmt.Sprintf("%s %s", issue.ID, issue.Title)))
-			fmt.Printf("    %s\n", ui.RenderClosedLine(fmt.Sprintf("Status: %s", issue.Status)))
-			fmt.Printf("    %s\n", ui.RenderClosedLine(fmt.Sprintf("Priority: P%d", issue.Priority)))
-			fmt.Println()
+			fmt.Fprintf(w, "  %s\n", ui.RenderClosedLine(fmt.Sprintf("%s %s", issue.ID, issue.Title)))
+			fmt.Fprintf(w, "    %s\n", ui.RenderClosedLine(fmt.Sprintf("Status: %s", issue.Status)))
+			fmt.Fprintf(w, "    %s\n", ui.RenderClosedLine(fmt.Sprintf("Priority: P%d", issue.Priority)))
+			fmt.Fprintln(w)
 			continue
 		}
-		fmt.Printf("  %s %s\n", ui.RenderCommand(issue.ID), issue.Title)
-		if issue.Status != "open" {
-			fmt.Printf("    Status: %s\n", issue.Status)
-		}
-		fmt.Printf("    Priority: %s\n", ui.RenderPriorityForStatus(issue.Priority, string(issue.Status)))
-		fmt.Println()
+		fmt.Fprintf(w, "  %s %s\n", ui.RenderCommand(issue.ID), issue.Title)
+		// EVERY bead prints a Status line, open included. This used to skip
+		// "open", so a count built by grepping "Status:" counted every bead
+		// EXCEPT the ones still waiting on a person. The count did not read
+		// low, it read zero: 28 real decisions were invisible for weeks while
+		// patrols reported the queue clear (hq-vjm31n, measured 2026-09-22).
+		fmt.Fprintf(w, "    Status: %s\n", issue.Status)
+		// P0 is a real priority, and it is the most urgent one. Every row
+		// prints its priority, P0 included.
+		fmt.Fprintf(w, "    Priority: %s\n", ui.RenderPriorityForStatus(issue.Priority, string(issue.Status)))
+		fmt.Fprintln(w)
 	}
 }
 
@@ -418,8 +509,9 @@ var humanStatsCmd = &cobra.Command{
 	Short: "Show summary statistics for human-needed beads",
 	Long: `Display summary statistics for human-needed beads.
 
-Shows counts for total, pending (open), responded (closed without dismiss),
-and dismissed beads.
+Shows counts for total, pending, responded (closed without dismiss), and
+dismissed beads. Pending is every bead that is NOT closed, so it counts
+in_progress, blocked and deferred beads too, not just open ones.
 
 Example:
   bd human stats`,
@@ -457,15 +549,14 @@ func printHumanStats(issues []*types.Issue) {
 	dismissed := 0
 
 	for _, issue := range issues {
-		switch issue.Status {
-		case "closed":
-			closed++
-			if strings.HasPrefix(issue.CloseReason, dismissedCloseReason) {
-				dismissed++
-			}
-		default:
-			// All non-closed statuses (open, in_progress, blocked, hooked, etc.) are pending
+		// Same predicate as the list, so the two surfaces cannot disagree.
+		if isWaitingOnHuman(issue) {
 			pending++
+			continue
+		}
+		closed++
+		if strings.HasPrefix(issue.CloseReason, dismissedCloseReason) {
+			dismissed++
 		}
 	}
 
@@ -493,7 +584,8 @@ func init() {
 	humanCmd.AddCommand(humanStatsCmd)
 
 	// Add flags for subcommands
-	humanListCmd.Flags().StringP("status", "s", "", "Filter by status (open, closed, etc.; comma-separated for multiple, 'all' for every status)")
+	humanListCmd.Flags().StringP("status", "s", "", "Filter by status (open, closed, etc.; comma-separated for multiple, 'all' for every status). Not the waiting list: --status=open hides in_progress, blocked and deferred beads nobody has answered. Use --waiting for those")
+	humanListCmd.Flags().Bool("waiting", false, "Show only beads still waiting on a human (every status except closed)")
 	humanRespondCmd.Flags().StringP("response", "r", "", "Response text")
 	registerTextSourceFlags(humanRespondCmd, "response text", "response")
 	humanDismissCmd.Flags().StringP("reason", "", "", "Reason for dismissal (optional)")
