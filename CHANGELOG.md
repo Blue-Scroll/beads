@@ -141,6 +141,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`bd human list` printed no Status line for an OPEN bead, so a count built
+  by grepping `Status:` read ZERO decisions waiting on a person.** The printer
+  skipped the Status line when the status was `open`, which is exactly the
+  state that means nobody has answered yet. The count did not read low, it read
+  zero. Measured 2026-09-22: 463 rows printed, 435 carried a Status line, and
+  the 28 missing ones were the whole waiting queue. Patrols had reported that
+  queue clear for weeks.
+
+  Every row now prints its Status, `open` included, so every existing counter
+  starts telling the truth with no edit. The header prints the answer outright,
+  so nobody has to count rows at all: `Waiting on a human: 28 (open 28).
+  Already answered: 435.`
+
+  Three more repairs in the same place:
+
+  - P0 printed no Priority line, because the printer treated the zero value as
+    "not set". P0 is the most urgent priority, so that hid the rows that matter
+    most. Every row now prints its priority.
+  - New `bd human list --waiting` shows every bead that is not closed.
+    `--status=open` is not the waiting list: it hides `in_progress`, `blocked`
+    and `deferred` beads that nobody has answered. On the same live data,
+    `--status=open` found 29 and `--waiting` found 97. Passing both flags is
+    refused, because they ask two different questions. The `--status` help text
+    now says so.
+  - `bd human list` and `bd human stats` now decide "waiting" with one shared
+    predicate, so the two surfaces cannot disagree about a count.
+
+  The list printer takes an `io.Writer`, so a test can read what a person
+  actually sees. The old test could only check that it did not panic, which is
+  how a missing line survived.
+
 - **`bd duplicate` and `bd supersede` dropped every fence instead of moving
   it.** Both commands closed the dying issue and did nothing about the issues
   held back behind it. Those holds came down the moment it closed, and a work

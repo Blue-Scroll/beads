@@ -3309,8 +3309,16 @@ List all issues labeled with 'human' tag.
 
 These are issues that require human intervention or input.
 
+Every row prints its Status, and the header prints how many beads are still
+waiting on a person. Read that number. Do not count rows yourself.
+
+A bead waits on a human until it is CLOSED, so --status=open is not the
+waiting list: it hides in_progress, blocked and deferred beads that nobody
+has answered. Use --waiting for every bead that still needs an answer.
+
 Examples:
   bd human list
+  bd human list --waiting
   bd human list --status=open
   bd human list --json
 
@@ -3321,7 +3329,8 @@ bd human list [flags]
 **Flags:**
 
 ```
-  -s, --status string   Filter by status (open, closed, etc.)
+  -s, --status string   Filter by ONE status. Not the waiting list: --status=open hides in_progress, blocked and deferred beads nobody has answered. Use --waiting for those
+      --waiting         Show only beads still waiting on a human (every status except closed)
 ```
 
 #### bd human respond
@@ -3348,8 +3357,9 @@ bd human respond <issue-id> [flags]
 
 Display summary statistics for human-needed beads.
 
-Shows counts for total, pending (open), responded (closed without dismiss),
-and dismissed beads.
+Shows counts for total, pending, responded (closed without dismiss), and
+dismissed beads. Pending is every bead that is NOT closed, so it counts
+in_progress, blocked and deferred beads too, not just open ones.
 
 Example:
   bd human stats
