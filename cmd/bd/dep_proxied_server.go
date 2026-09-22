@@ -130,6 +130,31 @@ func depEdgeFeedback(ctx context.Context, fromID, toID string, checkCycles bool)
 	return res
 }
 
+// requireProxiedDepTarget refuses a depends-on target this database cannot
+// read. The proxied add path resolves nothing before it writes, so without
+// this it stores any id at all, including a typo, as an unreadable target
+// that counts and never fences. The embedded and server paths get the same
+// refusal from resolveIDWithRouting in dep.go (vn-wzy43u5).
+//
+// The reader's Get spans both planes: a miss on the issue AND the wisp table
+// is ErrNotFound, and a backend failure passes through unchanged, so only a
+// real absence is refused.
+func requireProxiedDepTarget(ctx context.Context, fromID, toID string) error {
+	if IsExternalRef(toID) {
+		return nil
+	}
+	rd, err := proxiedIssueReader()
+	if err != nil {
+		return err
+	}
+	if _, err := rd.Get(ctx, issueops.GetRequest{ID: toID}); err == nil {
+		return nil
+	} else if !errors.Is(err, issueops.ErrNotFound) {
+		return err
+	}
+	return unresolvableDepTargetError(fromID, toID, errors.New("not found in this database"))
+}
+
 // proxiedCycleReport runs the post-write sweep on the proxied route through the
 // cycle role, which opens its own read-only unit of work.
 func proxiedCycleReport(ctx context.Context) ([]issueops.Cycle, error) {
@@ -235,6 +260,9 @@ func runDepAddProxiedServer(cmd *cobra.Command, ctx context.Context, args []stri
 
 	noCycleCheck, _ := cmd.Flags().GetBool("no-cycle-check")
 
+	if err := requireProxiedDepTarget(ctx, fromID, toID); err != nil {
+		return HandleErrorRespectJSON("%v", err)
+	}
 	edge := issueops.DependencyEdge{IssueID: fromID, DependsOnID: toID, Type: dt}
 	if err := addDependencyEdgesProxied(ctx, []issueops.DependencyEdge{edge}, false); err != nil {
 		return HandleErrorRespectJSON("%v", err)
@@ -294,6 +322,11 @@ func runDepAddBulkProxied(cmd *cobra.Command, ctx context.Context, file, default
 
 	noCycleCheck, _ := cmd.Flags().GetBool("no-cycle-check")
 
+	for _, edge := range depEdges {
+		if err := requireProxiedDepTarget(ctx, edge.IssueID, edge.DependsOnID); err != nil {
+			return HandleErrorRespectJSON("%v", err)
+		}
+	}
 	if err := addDependencyEdgesProxied(ctx, depEdges, noCycleCheck); err != nil {
 		return HandleErrorRespectJSON("%v", err)
 	}
