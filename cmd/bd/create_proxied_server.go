@@ -94,6 +94,12 @@ func runCreateProxiedSingle(_ *cobra.Command, ctx context.Context, in createInpu
 		return nil
 	}
 
+	// Refuse a --deps target this database cannot read before anything is
+	// written, so the refusal really does create nothing (vn-zc0gvqh).
+	if err := requireProxiedCreateDepTargets(ctx, deps); err != nil {
+		return HandleErrorRespectJSON("%v", err)
+	}
+
 	ops, err := proxiedIssueLifecycle()
 	if err != nil {
 		return HandleError("%v", err)
