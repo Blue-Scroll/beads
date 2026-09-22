@@ -99,6 +99,12 @@ func runCreateProxiedSingle(_ *cobra.Command, ctx context.Context, in createInpu
 	issue := buildCreateIssueFromInput(in)
 
 	res, err := uow.RunTxResult(ctx, uowProvider, func(ctx context.Context, uw uow.UnitOfWork) (*types.Issue, string, error) {
+		// Refuse a --deps target this database cannot read before anything is
+		// written. The whole transaction rolls back on this error, so the
+		// refusal really does create nothing (vn-zc0gvqh).
+		if err := requireProxiedCreateDepTargets(ctx, uw, deps); err != nil {
+			return nil, "", err
+		}
 		cctx, err := uw.ConfigUseCase().LoadCreateContext(ctx)
 		if err != nil {
 			return nil, "", fmt.Errorf("load create context: %w", err)

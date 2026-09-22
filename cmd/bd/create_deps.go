@@ -9,6 +9,16 @@ import (
 	"github.com/steveyegge/beads/internal/types"
 )
 
+// parseDepSpecs turns the raw --deps strings into specs. It only reads the
+// strings; it never asks whether a target exists.
+//
+// A caller that is about to WRITE these edges must also run
+// requireResolvableCreateDepTargets (or requireProxiedCreateDepTargets, if it
+// holds a unit of work instead of a store) before it creates anything.
+// Skipping that is how "bd create --deps blocked-by:<id from another ledger>"
+// used to make an issue with a dependency_count of 1 that no reader ever
+// honored (vn-zc0gvqh). A caller that only PREVIEWS the specs, such as
+// --dry-run, does not need it.
 func parseDepSpecs(deps []string) ([]domain.DependencySpec, error) {
 	// deps arrives already comma-split: cobra's StringSlice flag CSV-decodes
 	// each --deps value, so re-splitting on "," here would double-decode a
