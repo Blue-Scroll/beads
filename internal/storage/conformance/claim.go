@@ -2,6 +2,7 @@ package conformance
 
 import (
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -326,5 +327,94 @@ func testUnclaimIfAssigneeStale(t *testing.T, f Factory) {
 		if e.EventType == types.EventType("unclaimed") {
 			t.Errorf("stale conditional release recorded an unclaimed event: %+v", e)
 		}
+	}
+}
+
+// deferredHeldIssue makes the state vn-mpifu59 hit: an issue a worker still
+// holds, then deferred to a date one day out. It returns the defer date.
+func deferredHeldIssue(t *testing.T, s storage.DoltStorage, id, holder string) time.Time {
+	t.Helper()
+	future := time.Now().UTC().Add(24 * time.Hour).Truncate(time.Second)
+	must(t, s.CreateIssue(ctx(), withDefaults(&types.Issue{
+		ID: id, Title: "T", Status: types.StatusDeferred, Assignee: holder, DeferUntil: &future,
+	}), "a"))
+	return future
+}
+
+// assertReleasedStillDeferred checks a release of a deferred issue cleared the
+// holder and left everything else alone: still deferred, same defer date, not
+// ready work, and an "unclaimed" event that says "deferred", not "open".
+func assertReleasedStillDeferred(t *testing.T, s storage.DoltStorage, id string, deferAt time.Time) {
+	t.Helper()
+	got, err := s.GetIssue(ctx(), id)
+	must(t, err)
+	if got.Assignee != "" {
+		t.Errorf("after release: assignee = %q, want empty", got.Assignee)
+	}
+	if got.Status != types.StatusDeferred {
+		t.Errorf("after release: status = %q, want deferred (a release must not reopen a deferred issue)", got.Status)
+	}
+	if got.DeferUntil == nil || !got.DeferUntil.Equal(deferAt) {
+		t.Errorf("after release: defer_until = %v, want %v", got.DeferUntil, deferAt)
+	}
+	ready, err := s.GetReadyWork(ctx(), types.WorkFilter{})
+	must(t, err)
+	for _, r := range ready {
+		if r.ID == id {
+			t.Errorf("released deferred issue %s is ready work before its date", id)
+		}
+	}
+	events, err := s.GetEvents(ctx(), id, 0)
+	must(t, err)
+	found := false
+	for _, e := range events {
+		if e.EventType != types.EventType("unclaimed") {
+			continue
+		}
+		found = true
+		if e.NewValue == nil || !strings.Contains(*e.NewValue, `"status":"deferred"`) {
+			t.Errorf("unclaimed event new_value = %v, want it to record status deferred", e.NewValue)
+		}
+	}
+	if !found {
+		t.Errorf("release of %s recorded no unclaimed event", id)
+	}
+}
+
+// testUnclaimDeferredStaysDeferred: a holder can release a deferred issue it
+// still holds, and the issue stays deferred until its date. Before this, unclaim
+// answered "no matching row", so the only release that worked was unclaim THEN
+// defer, and another worker claimed the issue in the gap (vn-mpifu59).
+func testUnclaimDeferredStaysDeferred(t *testing.T, f Factory) {
+	s := f(t)
+	deferAt := deferredHeldIssue(t, s, "ud-1", "worker1")
+	must(t, s.UnclaimIssue(ctx(), "ud-1", "worker1", false))
+	assertReleasedStillDeferred(t, s, "ud-1", deferAt)
+}
+
+// testUnclaimIfAssigneeDeferredStaysDeferred: the compare-and-swap release
+// follows the same rule as the plain one.
+func testUnclaimIfAssigneeDeferredStaysDeferred(t *testing.T, f Factory) {
+	s := f(t)
+	deferAt := deferredHeldIssue(t, s, "ud-2", "worker1")
+	must(t, s.UnclaimIssueIfAssignee(ctx(), "ud-2", "releaser", "worker1"))
+	assertReleasedStillDeferred(t, s, "ud-2", deferAt)
+}
+
+// testUnclaimRefusesUnreleasableStatus: a status a claim never sets (blocked
+// here) is refused with an error that names it, and the row is untouched.
+func testUnclaimRefusesUnreleasableStatus(t *testing.T, f Factory) {
+	s := f(t)
+	must(t, s.CreateIssue(ctx(), withDefaults(&types.Issue{
+		ID: "ud-3", Title: "T", Status: types.StatusBlocked, Assignee: "worker1",
+	}), "a"))
+	err := s.UnclaimIssue(ctx(), "ud-3", "worker1", false)
+	if err == nil || !strings.Contains(err.Error(), `"blocked"`) {
+		t.Errorf("unclaim of a blocked issue: err = %v, want a refusal naming status \"blocked\"", err)
+	}
+	got, gerr := s.GetIssue(ctx(), "ud-3")
+	must(t, gerr)
+	if got.Status != types.StatusBlocked || got.Assignee != "worker1" {
+		t.Errorf("refused unclaim changed the row: status=%q assignee=%q", got.Status, got.Assignee)
 	}
 }

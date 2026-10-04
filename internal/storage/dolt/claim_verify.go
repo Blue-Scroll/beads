@@ -57,13 +57,16 @@ func claimedBy(actor string) claimPostcondition {
 	}
 }
 
+// unclaimed accepts open OR deferred, because a release leaves a deferred issue
+// deferred (issueops.statusAfterUnclaim). A lost write still fails this check:
+// it leaves the assignee set.
 func unclaimed() claimPostcondition {
 	return claimPostcondition{
 		op: "unclaim",
 		want: func(assignee string, status types.Status) bool {
-			return assignee == "" && status == types.StatusOpen
+			return assignee == "" && (status == types.StatusOpen || status == types.StatusDeferred)
 		},
-		desc: fmt.Sprintf("assignee=%q status=%q", "", types.StatusOpen),
+		desc: fmt.Sprintf("assignee=%q status=%q or %q", "", types.StatusOpen, types.StatusDeferred),
 	}
 }
 

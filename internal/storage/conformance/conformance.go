@@ -158,6 +158,9 @@ func RunAll(t *testing.T, factory Factory) {
 	t.Run("ReclaimScoped", func(t *testing.T) { testReclaimScoped(t, factory) })
 	t.Run("UnclaimIfAssigneeMatch", func(t *testing.T) { testUnclaimIfAssigneeMatch(t, factory) })
 	t.Run("UnclaimIfAssigneeStale", func(t *testing.T) { testUnclaimIfAssigneeStale(t, factory) })
+	t.Run("UnclaimDeferredStaysDeferred", func(t *testing.T) { testUnclaimDeferredStaysDeferred(t, factory) })
+	t.Run("UnclaimIfAssigneeDeferredStaysDeferred", func(t *testing.T) { testUnclaimIfAssigneeDeferredStaysDeferred(t, factory) })
+	t.Run("UnclaimRefusesUnreleasableStatus", func(t *testing.T) { testUnclaimRefusesUnreleasableStatus(t, factory) })
 
 	// Labels
 	t.Run("Labels", func(t *testing.T) { testLabels(t, factory) })

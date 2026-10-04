@@ -507,8 +507,9 @@ func (s *DoltStore) ReclaimExpiredLeases(ctx context.Context, olderThan time.Dur
 	return reclaimed, nil
 }
 
-// UnclaimIssue atomically unclaims an issue by clearing the assignee, resetting
-// status to "open", deleting its lease row and rewriting row_lock. Records
+// UnclaimIssue atomically unclaims an issue by clearing the assignee, setting
+// status back to "open" (a deferred issue stays deferred, see
+// issueops.UnclaimIssueInTx), deleting its lease row and rewriting row_lock. Records
 // an "unclaimed" event. Only the current assignee may release its own claim
 // unless force is set (admin/reaper override). Delegates SQL work to
 // issueops.UnclaimIssueInTx; handles Dolt-specific concerns (DOLT_ADD/COMMIT).

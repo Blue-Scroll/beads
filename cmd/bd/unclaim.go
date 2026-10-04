@@ -15,10 +15,19 @@ var unclaimCmd = &cobra.Command{
 	Short:         "Release a claimed issue",
 	SilenceUsage:  true,
 	SilenceErrors: true,
-	Long: `Release a claimed issue by clearing the assignee and resetting status to 'open'.
+	Long: `Release a claimed issue by clearing the assignee and setting status back to 'open'.
 
 Use this when an agent crashes mid-work or you need to abandon a claimed task.
 The issue becomes available for re-claiming by other agents.
+
+A deferred issue stays deferred, and keeps its defer date. So to park an issue
+you hold until a later date, defer it FIRST and unclaim it second:
+
+  bd defer bd-123 --until 2026-10-05T11:00:00Z
+  bd unclaim bd-123
+
+The other order (unclaim, then defer) leaves the issue open and ready between
+the two commands, and another worker can claim it in that gap.
 
 Only the current assignee can release its own claim. Releasing another
 actor's claim requires --force and should be coordinated with the holder
