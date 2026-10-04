@@ -223,6 +223,9 @@ func RunAll(t *testing.T, factory Factory) {
 	t.Run("ReclaimScoped", func(t *testing.T) { testReclaimScoped(t, factory) })
 	t.Run("UnclaimIfAssigneeMatch", func(t *testing.T) { testUnclaimIfAssigneeMatch(t, factory) })
 	t.Run("UnclaimIfAssigneeStale", func(t *testing.T) { testUnclaimIfAssigneeStale(t, factory) })
+	t.Run("UnclaimDeferredStaysDeferred", func(t *testing.T) { testUnclaimDeferredStaysDeferred(t, factory) })
+	t.Run("UnclaimIfAssigneeDeferredStaysDeferred", func(t *testing.T) { testUnclaimIfAssigneeDeferredStaysDeferred(t, factory) })
+	t.Run("UnclaimRefusesUnreleasableStatus", func(t *testing.T) { testUnclaimRefusesUnreleasableStatus(t, factory) })
 
 	// The Claimer role is NOT run here. Its contract lives in
 	// claimer_contract.go and is wired at all three legs through per-backend
