@@ -383,6 +383,7 @@ func TestBuildReadyWorkWhereStatusFilter(t *testing.T) {
 	tests := []struct {
 		name            string
 		filter          types.WorkFilter
+		inputs          ReadyWorkWhereInputs
 		wantClause      string
 		rejectClause    string // must NOT appear in the WHERE; "" skips the check
 		wantLeadingArgs []any
@@ -396,16 +397,40 @@ func TestBuildReadyWorkWhereStatusFilter(t *testing.T) {
 		{
 			name:            "SingularStatusWinsOverStatuses",
 			filter:          types.WorkFilter{Status: "open", Statuses: []types.Status{"blocked", "pinned"}},
-			wantClause:      "(status = ? OR status IN (SELECT name FROM custom_statuses WHERE category = 'active'))",
+			wantClause:      "status = ?",
 			rejectClause:    "status IN (?",
+			wantLeadingArgs: []any{"open"},
+		},
+		{
+			name:            "OpenWithNoActiveCustomStatusesIsPlainEquality",
+			filter:          types.WorkFilter{Status: types.StatusOpen},
+			wantClause:      "status = ?",
+			rejectClause:    "status IN (",
 			wantLeadingArgs: []any{"open"},
 		},
 		{
 			name:            "OpenIncludesCustomActiveCategory",
 			filter:          types.WorkFilter{Status: types.StatusOpen},
-			wantClause:      "status IN (SELECT name FROM custom_statuses WHERE category = 'active')",
+			inputs:          ReadyWorkWhereInputs{ActiveCustomStatuses: []string{"review", "triaged"}},
+			wantClause:      "status IN (?,?,?)",
 			rejectClause:    "status IN ('open', 'in_progress')",
-			wantLeadingArgs: []any{"open"},
+			wantLeadingArgs: []any{"open", "review", "triaged"},
+		},
+		{
+			name:            "OpenActiveCustomStatusesDedupedAndEmptyDropped",
+			filter:          types.WorkFilter{Status: types.StatusOpen},
+			inputs:          ReadyWorkWhereInputs{ActiveCustomStatuses: []string{"review", "", "open", "review"}},
+			wantClause:      "status IN (?,?)",
+			rejectClause:    "status IN (?,?,?",
+			wantLeadingArgs: []any{"open", "review"},
+		},
+		{
+			name:            "NonOpenSingularStatusIgnoresActiveCustomStatuses",
+			filter:          types.WorkFilter{Status: types.StatusInProgress},
+			inputs:          ReadyWorkWhereInputs{ActiveCustomStatuses: []string{"review"}},
+			wantClause:      "status = ?",
+			rejectClause:    "status IN (",
+			wantLeadingArgs: []any{"in_progress"},
 		},
 		{
 			name:            "NonOpenSingularStatusStaysExact",
@@ -426,9 +451,14 @@ func TestBuildReadyWorkWhereStatusFilter(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			where, args, err := BuildReadyWorkWhere(tt.filter, IssuesFilterTables, ReadyWorkWhereInputs{})
+			where, args, err := BuildReadyWorkWhere(tt.filter, IssuesFilterTables, tt.inputs)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
+			}
+			// vn-dinj19z: a custom_statuses subquery in the status
+			// predicate stops Dolt using the status index (18.5s vs 0.19s).
+			if strings.Contains(where, "custom_statuses") {
+				t.Errorf("ready WHERE must not query custom_statuses inline.\n where = %s", where)
 			}
 			if !strings.Contains(where, tt.wantClause) {
 				t.Errorf("status clause %q missing.\n where = %s", tt.wantClause, where)

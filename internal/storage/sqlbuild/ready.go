@@ -78,6 +78,13 @@ type ReadyWorkWhereInputs struct {
 	// ParentDescendantIDs are the transitive descendants of *filter.ParentID;
 	// consulted only when filter.ParentID != nil.
 	ParentDescendantIDs []string
+	// ActiveCustomStatuses are the names of custom statuses whose category is
+	// 'active' (the rows SELECT name FROM custom_statuses WHERE category =
+	// 'active' returns); consulted only when filter.Status == open. They are
+	// bound inline because a "status = ? OR status IN (subquery)" predicate
+	// stops Dolt using the status index and scans every row (vn-dinj19z:
+	// 18.5s vs 0.19s on a 71k-row ledger).
+	ActiveCustomStatuses []string
 }
 
 // BuildReadyWorkWhere renders the full ready-work WHERE clause for one table
@@ -98,13 +105,22 @@ func BuildReadyWorkWhere(filter types.WorkFilter, tables FilterTables, in ReadyW
 		// Singular StatusOpen is the `bd ready` pin and means the ready-
 		// eligible set: built-in open plus category-active custom statuses,
 		// matching the ready_issues view since migration 0025 (GH#5831).
-		// Any other singular status stays exact.
+		// The active names arrive precomputed (in.ActiveCustomStatuses) and
+		// are bound as plain values: never put a custom_statuses subquery
+		// here, it defeats the status index (vn-dinj19z). Any other singular
+		// status stays exact.
+		statuses := []string{string(filter.Status)}
 		if filter.Status == types.StatusOpen {
-			statusClause = "(status = ? OR status IN (SELECT name FROM custom_statuses WHERE category = 'active'))"
-		} else {
-			statusClause = "status = ?"
+			statuses = appendActiveCustomStatuses(statuses, in.ActiveCustomStatuses)
 		}
-		args = append(args, string(filter.Status))
+		if len(statuses) == 1 {
+			statusClause = "status = ?"
+			args = append(args, statuses[0])
+		} else {
+			ph, statusArgs := InPlaceholders(statuses)
+			statusClause = fmt.Sprintf("status IN (%s)", ph)
+			args = append(args, statusArgs...)
+		}
 	case len(filter.Statuses) > 0:
 		ph, statusArgs := InPlaceholders(filter.Statuses)
 		statusClause = fmt.Sprintf("status IN (%s)", ph)
@@ -220,4 +236,22 @@ func BuildReadyWorkWhere(filter types.WorkFilter, tables FilterTables, in ReadyW
 	}
 
 	return "WHERE " + strings.Join(whereClauses, " AND "), args, nil
+}
+
+// appendActiveCustomStatuses appends each active custom status name to base,
+// skipping empty names and any name already present, so the bound IN list
+// matches the old "status = 'open' OR status IN (active names)" set exactly.
+func appendActiveCustomStatuses(base, active []string) []string {
+	seen := make(map[string]bool, len(base)+len(active))
+	for _, s := range base {
+		seen[s] = true
+	}
+	for _, s := range active {
+		if s == "" || seen[s] {
+			continue
+		}
+		seen[s] = true
+		base = append(base, s)
+	}
+	return base
 }

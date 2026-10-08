@@ -250,7 +250,10 @@ func TestGetReadyWorkInTxOpenIncludesCustomActive(t *testing.T) {
 	_, mock, tx := beginMockTx(t)
 	mock.ExpectQuery(deferredParentProbeRegex("issues")).WillReturnError(sql.ErrNoRows)
 	mock.ExpectQuery(deferredParentProbeRegex("wisps")).WillReturnError(sql.ErrNoRows)
-	mock.ExpectQuery(`SELECT id FROM issues\s+WHERE \(status = \? OR status IN \(SELECT name FROM custom_statuses WHERE category = 'active'\)\)`).
+	mock.ExpectQuery(`SELECT name FROM custom_statuses WHERE category = 'active'`).
+		WillReturnRows(sqlmock.NewRows([]string{"name"}).AddRow("review").AddRow("triaged"))
+	// vn-dinj19z: the active names are bound inline, never a subquery.
+	mock.ExpectQuery(`SELECT id FROM issues\s+WHERE status IN \(\?,\?,\?\)`).
 		WillReturnRows(sqlmock.NewRows([]string{"id"}))
 	mock.ExpectQuery(`SELECT 1 FROM wisps LIMIT 1`).WillReturnError(sql.ErrNoRows)
 
@@ -264,6 +267,44 @@ func TestGetReadyWorkInTxOpenIncludesCustomActive(t *testing.T) {
 	}
 	if len(got) != 0 {
 		t.Fatalf("expected no rows, got %d", len(got))
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet SQL expectations: %v", err)
+	}
+}
+
+func TestGetReadyWorkInTxOpenWithoutCustomActiveUsesEquality(t *testing.T) {
+	t.Parallel()
+
+	_, mock, tx := beginMockTx(t)
+	mock.ExpectQuery(deferredParentProbeRegex("issues")).WillReturnError(sql.ErrNoRows)
+	mock.ExpectQuery(deferredParentProbeRegex("wisps")).WillReturnError(sql.ErrNoRows)
+	mock.ExpectQuery(`SELECT name FROM custom_statuses WHERE category = 'active'`).
+		WillReturnRows(sqlmock.NewRows([]string{"name"}))
+	mock.ExpectQuery(`SELECT id FROM issues\s+WHERE status = \?\s+AND`).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}))
+	mock.ExpectQuery(`SELECT 1 FROM wisps LIMIT 1`).WillReturnError(sql.ErrNoRows)
+
+	if _, err := GetReadyWorkInTx(context.Background(), tx, types.WorkFilter{Status: types.StatusOpen}); err != nil {
+		t.Fatalf("GetReadyWorkInTx: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet SQL expectations: %v", err)
+	}
+}
+
+func TestGetReadyWorkInTxActiveCustomStatusLookupErrorFails(t *testing.T) {
+	t.Parallel()
+
+	_, mock, tx := beginMockTx(t)
+	mock.ExpectQuery(deferredParentProbeRegex("issues")).WillReturnError(sql.ErrNoRows)
+	mock.ExpectQuery(deferredParentProbeRegex("wisps")).WillReturnError(sql.ErrNoRows)
+	mock.ExpectQuery(`SELECT name FROM custom_statuses WHERE category = 'active'`).
+		WillReturnError(errors.New("boom"))
+
+	_, err := GetReadyWorkInTx(context.Background(), tx, types.WorkFilter{Status: types.StatusOpen})
+	if err == nil || !strings.Contains(err.Error(), "boom") {
+		t.Fatalf("GetReadyWorkInTx err = %v, want the custom status lookup error", err)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("unmet SQL expectations: %v", err)

@@ -7,6 +7,7 @@ import (
 	"fmt"
 
 	"github.com/steveyegge/beads/internal/storage/dberrors"
+	"github.com/steveyegge/beads/internal/storage/issueops"
 	"github.com/steveyegge/beads/internal/storage/sqlbuild"
 	"github.com/steveyegge/beads/internal/types"
 )
@@ -42,6 +43,13 @@ func (r *issueSQLRepositoryImpl) buildReadyWorkPredicates(ctx context.Context, f
 			return nil, fmt.Errorf("get parent descendants: %w", descErr)
 		}
 		inputs.ParentDescendantIDs = descendantIDs
+	}
+	if filter.Status == types.StatusOpen {
+		active, acErr := issueops.ActiveCustomStatusNamesInTx(ctx, r.runner)
+		if acErr != nil {
+			return nil, fmt.Errorf("get ready work: %w", acErr)
+		}
+		inputs.ActiveCustomStatuses = active
 	}
 
 	whereSQL, args, err := sqlbuild.BuildReadyWorkWhere(filter, tables, inputs)

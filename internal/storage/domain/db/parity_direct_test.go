@@ -429,3 +429,44 @@ func (s *testSuite) TestParitySortTieBreak() {
 		s.Equal(wantLexical, domCounts, "sort=%q (counts): ties must break on id ASC", sortBy)
 	}
 }
+
+// Ready pinned to StatusOpen means built-in open plus every custom status in
+// the active category (GH#5831), on both stacks. vn-dinj19z moved the active
+// names out of an inline custom_statuses subquery (which cost Dolt its status
+// index) into bound values; this pins that the set did not change: with no
+// custom statuses ready is exactly open, and with an active one it joins,
+// while wip customs and in_progress stay out.
+func (s *testSuite) TestParityReadyOpenIncludesActiveCustomStatuses() {
+	base := s.parityBase()
+	mk := func(id string, status types.Status, minute int) {
+		s.seedParityIssue(id, func(i *types.Issue) {
+			i.CreatedAt = base.Add(time.Duration(minute) * time.Minute)
+		}, false)
+		if status != types.StatusOpen {
+			_, err := s.Runner().ExecContext(s.Ctx(), "UPDATE issues SET status = ? WHERE id = ?", string(status), id)
+			s.Require().NoError(err)
+		}
+	}
+	mk("bd-par-cact-open", types.StatusOpen, 0)
+	mk("bd-par-cact-triaged", "triaged", 1)
+	mk("bd-par-cact-polish", "polishing", 2)
+	mk("bd-par-cact-ip", types.StatusInProgress, 3)
+
+	openOnly := types.WorkFilter{Status: types.StatusOpen}
+	classic := idsOf(s.classicReady(openOnly))
+	dom := idsOf(s.domainReady(openOnly).Items)
+	s.Equal(classic, dom, "ready open, no custom statuses: same sequence")
+	s.ElementsMatch([]string{"bd-par-cact-open"}, dom, "ready open, no custom statuses: only built-in open")
+
+	for _, row := range [][2]string{{"triaged", string(types.CategoryActive)}, {"polishing", "wip"}} {
+		_, err := s.Runner().ExecContext(s.Ctx(),
+			"INSERT INTO custom_statuses (name, category) VALUES (?, ?)", row[0], row[1])
+		s.Require().NoError(err)
+	}
+
+	classic = idsOf(s.classicReady(openOnly))
+	dom = idsOf(s.domainReady(openOnly).Items)
+	s.Equal(classic, dom, "ready open with custom statuses: same sequence")
+	s.ElementsMatch([]string{"bd-par-cact-open", "bd-par-cact-triaged"}, dom,
+		"ready open: active customs join, wip customs and in_progress stay out")
+}

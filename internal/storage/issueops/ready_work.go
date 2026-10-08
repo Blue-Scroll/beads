@@ -64,6 +64,13 @@ func buildReadyWorkPredicates(ctx context.Context, tx DBTX, filter types.WorkFil
 		}
 		inputs.ParentDescendantIDs = descendantIDs
 	}
+	if filter.Status == types.StatusOpen {
+		active, acErr := ActiveCustomStatusNamesInTx(ctx, tx)
+		if acErr != nil {
+			return nil, fmt.Errorf("get ready work: %w", acErr)
+		}
+		inputs.ActiveCustomStatuses = active
+	}
 
 	whereSQL, whereArgs, err := sqlbuild.BuildReadyWorkWhere(filter, tables, inputs)
 	if err != nil {
@@ -88,6 +95,33 @@ func buildReadyWorkPredicates(ctx context.Context, tx DBTX, filter types.WorkFil
 		args:             args,
 		deferredChildIDs: inputs.DeferredChildIDs,
 	}, nil
+}
+
+// ActiveCustomStatusNamesInTx returns the names of custom statuses whose
+// category is 'active', read from the custom_statuses table inside tx. It is
+// the exact row set the ready predicate used to fetch with an inline
+// subquery; ready work now binds these names as plain values so the status
+// index stays usable (vn-dinj19z). Like that subquery it reads only the
+// table, never the status.custom config fallback, and any error (including a
+// missing table) is returned rather than masked.
+func ActiveCustomStatusNamesInTx(ctx context.Context, tx DBTX) ([]string, error) {
+	rows, err := tx.QueryContext(ctx, "SELECT name FROM custom_statuses WHERE category = 'active' ORDER BY name")
+	if err != nil {
+		return nil, fmt.Errorf("active custom statuses: %w", err)
+	}
+	defer rows.Close()
+	var names []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, fmt.Errorf("active custom statuses: scan: %w", err)
+		}
+		names = append(names, name)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("active custom statuses: %w", err)
+	}
+	return names, nil
 }
 
 //nolint:gosec // G201: whereSQL/orderBySQL built from hardcoded strings and ? placeholders
