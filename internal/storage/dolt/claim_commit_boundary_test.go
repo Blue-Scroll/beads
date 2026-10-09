@@ -107,12 +107,12 @@ func (c *claimCommitBoundaryConn) QueryContext(_ context.Context, query string, 
 			columns: []string{"id"},
 			values:  [][]driver.Value{{c.driver.activeID}},
 		}, nil
-	case strings.Contains(query, "FROM issues") && strings.Contains(query, "LEFT JOIN leases") && strings.Contains(query, "WHERE id IN ("):
+	case strings.Contains(query, "FROM issues") && strings.Contains(query, "leases ON leases.issue_id") && strings.Contains(query, "WHERE id IN ("):
 		return &claimCommitBoundaryRows{
 			columns: claimBoundaryIssueColumns(),
 			values:  [][]driver.Value{claimBoundaryIssueValues(c.driver.activeID)},
 		}, nil
-	case strings.Contains(query, "FROM issues") && strings.Contains(query, "LEFT JOIN leases") && strings.Contains(query, "WHERE id = ?"):
+	case strings.Contains(query, "FROM issues") && strings.Contains(query, "leases ON leases.issue_id") && strings.Contains(query, "WHERE id = ?"):
 		return &claimCommitBoundaryRows{
 			columns: claimBoundaryIssueColumns(),
 			values:  [][]driver.Value{claimBoundaryIssueValues(c.driver.activeID)},

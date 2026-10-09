@@ -96,9 +96,30 @@ const IssueSelectColumnsLite = IssueBaseColumnsLite + `,
 // leases table onto the given issues/wisps table reference (a table name or
 // alias). LEFT JOIN: rows without a live claim have no lease row and hydrate
 // nil lease fields.
+//
+// The leases side is a derived table, not the bare table, ON PURPOSE. Both
+// issues.id and leases.issue_id are primary keys, and with the bare table the
+// Dolt planner (no table statistics on a managed server) reads a merge join
+// over the two PK orders as the cheapest plan whenever a non-sargable
+// predicate such as a JSON_EXTRACT metadata filter sits beside the status
+// filter. A merge join walks EVERY issues row in PK order, so the status
+// index the WHERE clause earned is thrown away: `status IN (...) AND
+// JSON_UNQUOTE(JSON_EXTRACT(metadata, ...)) = ?` scanned all 71k rows of one
+// ledger (vn-cdrw5n3) and ran the JSON probe on each. A derived table has no
+// index to merge on, so the planner hashes the handful of lease rows and
+// drives from issues, which keeps its own best index: a PK seek for a get by
+// id, the status index for a list. Measured on that ledger: the same list
+// went from a full scan to a status-index range; the counts mega-query and
+// get-by-id plans were unchanged.
 func LeaseJoin(tableRef string) string {
-	return "LEFT JOIN leases ON leases.issue_id = " + tableRef + ".id"
+	return "LEFT JOIN (SELECT " + leaseTableColumns + " FROM leases) leases ON leases.issue_id = " + tableRef + ".id"
 }
+
+// leaseTableColumns is every column of the leases table, so the derived
+// table LeaseJoin builds is a full stand-in for it: any leases.<col> a
+// query already names keeps resolving. Keep it in step with the leases
+// schema (0055_move_leases_to_table) and with LeaseSelectColumns above.
+const leaseTableColumns = "issue_id, holder, granted_at, lease_expires_at, heartbeat_at, granted_node"
 
 // QueryBatchSize bounds IN-clause sizes when long ID lists are folded into
 // WHERE fragments.

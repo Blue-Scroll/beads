@@ -343,6 +343,17 @@ func runMarkUnmarkBatchedInTx(ctx context.Context, tx DBTX, markTmpl, unmarkTmpl
 	return changed, nil
 }
 
+// BatchedMarkBlockedStatementForIssues returns the exact statement
+// runMarkBatchedInTx executes for ids as ONE batch (so len(ids) must be at
+// most queryBatchSize to match production): the issues mark template with
+// every IN-list expanded and the bound ids repeated per occurrence. It
+// exists so a plan guard in a Dolt-backed test can EXPLAIN the production
+// text instead of a copy; nothing in the write path calls it.
+func BatchedMarkBlockedStatementForIssues(ids []string) (string, []interface{}) {
+	placeholders, args := buildSQLInClause(ids)
+	return expandBatchTemplate(markBlockedTemplateForIssues(), placeholders, args)
+}
+
 func runMarkBatchedInTx(ctx context.Context, tx DBTX, markTmpl string, ids []string) (int64, error) {
 	var changed int64
 	for start := 0; start < len(ids); start += queryBatchSize {

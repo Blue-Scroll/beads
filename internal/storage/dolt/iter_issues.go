@@ -30,6 +30,18 @@ import (
 	"github.com/steveyegge/beads/internal/types"
 )
 
+// iterIssuesSQL is the statement IterIssues runs: the full issue hydration
+// list over the issues table, lease overlay included, in the default
+// (priority, created_at DESC, id) order. whereSQL is the finished WHERE
+// clause (or ""), limitSQL the finished LIMIT (or ""). It is a function so
+// the planner guard in plan_shape_test.go EXPLAINs this text and not a copy.
+//
+//nolint:gosec // G201: whereSQL contains column comparisons with ?, limitSQL is a safe integer
+func iterIssuesSQL(whereSQL, limitSQL string) string {
+	return fmt.Sprintf(`SELECT %s FROM issues %s %s ORDER BY priority ASC, created_at DESC, id ASC%s`,
+		issueops.IssueSelectColumns, sqlbuild.LeaseJoin("issues"), whereSQL, limitSQL)
+}
+
 // IterIssues returns issues matching the filter from the `issues` table.
 //
 // The path queries only the issues table (wisps are returned separately via
@@ -52,10 +64,7 @@ func (s *DoltStore) IterIssues(ctx context.Context, query string, filter types.I
 	if filter.Limit > 0 {
 		limitSQL = fmt.Sprintf(" LIMIT %d", filter.Limit)
 	}
-
-	//nolint:gosec // G201: whereSQL contains column comparisons with ?, limitSQL is a safe integer
-	q := fmt.Sprintf(`SELECT %s FROM issues %s %s ORDER BY priority ASC, created_at DESC, id ASC%s`,
-		issueops.IssueSelectColumns, sqlbuild.LeaseJoin("issues"), whereSQL, limitSQL)
+	q := iterIssuesSQL(whereSQL, limitSQL)
 
 	var issues []*types.Issue
 	txErr := s.withReadTx(ctx, func(tx *sql.Tx) error {

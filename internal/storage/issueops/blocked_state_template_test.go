@@ -93,3 +93,52 @@ func TestExpandBatchTemplateSingleOccurrenceDegrades(t *testing.T) {
 		t.Errorf("arg count = %d, want %d", len(stmtArgs), len(args))
 	}
 }
+
+// The scoped union reads each blocks/parent-child leg's dependency rows
+// through a DISTINCT derived table, and the unscoped one joins the bare
+// table (vn-cdrw5n3; shouldBeBlockedIDsUnionScopedSQL says why the shape
+// depends on the scope). Both are planner barriers the engine never sees
+// as semantics, so a well-meaning cleanup can fold either back without any
+// result changing in a small test; this pins the shape at the fast tier.
+// The plan itself is guarded by TestBatchedMarkBlockedPlanSeeksTheBatch in
+// internal/storage/dolt.
+func TestScopedUnionLegsReadDependenciesThroughDerivedTables(t *testing.T) {
+	scoped := shouldBeBlockedIDsUnionScopedSQL("dependencies", batchScopeSQL)
+	unscoped := shouldBeBlockedIDsUnionSQL("dependencies")
+
+	// Four target legs plus the waits-for leg, each behind its own barrier.
+	if got := strings.Count(scoped, "SELECT DISTINCT"); got != 5 {
+		t.Errorf("scoped union: %d DISTINCT derived tables, want 5 (one per leg)", got)
+	}
+	// Unscoped keeps the flat joins: only the waits-for leg is derived.
+	if got := strings.Count(unscoped, "SELECT DISTINCT"); got != 1 {
+		t.Errorf("unscoped union: %d DISTINCT derived tables, want 1 (the waits-for leg only)", got)
+	}
+	// The batch predicate sits INSIDE every derived table, where the planner
+	// turns it into an idx_dependencies_issue seek; outside it is applied
+	// after a merge join has already walked the whole table.
+	if got := strings.Count(scoped, batchScopeSQL); got != 5 {
+		t.Errorf("scoped union carries the batch predicate %d times, want 5", got)
+	}
+	if strings.Contains(unscoped, "IN (") {
+		t.Errorf("unscoped union must not carry a batch predicate:\n%s", unscoped)
+	}
+
+	// Same membership rule in both shapes: every type and target predicate
+	// of the four target legs appears in each.
+	for _, pred := range []string{
+		"(d.type = 'blocks' OR d.type = 'conditional-blocks')",
+		"d.type = 'parent-child'",
+		"t.status <> 'closed' AND t.status <> 'pinned'",
+		"p.is_blocked = 1",
+		"JOIN issues t ON t.id = d.depends_on_issue_id",
+		"JOIN wisps t ON t.id = d.depends_on_wisp_id",
+		"JOIN issues p ON p.id = d.depends_on_issue_id",
+		"JOIN wisps p ON p.id = d.depends_on_wisp_id",
+	} {
+		if strings.Count(scoped, pred) != strings.Count(unscoped, pred) {
+			t.Errorf("predicate %q: scoped has %d, unscoped has %d; the two shapes must decide membership the same way",
+				pred, strings.Count(scoped, pred), strings.Count(unscoped, pred))
+		}
+	}
+}

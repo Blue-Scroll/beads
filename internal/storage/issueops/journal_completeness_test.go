@@ -156,6 +156,10 @@ var beadDMLExemptions = map[string]string{
 	"InsertDerivedEventReturningID": "writes the events audit table (templated %s), not work-bead state",
 	"GetNextChildIDTx":              "writes the child_counters allocation table (templated %s), not work-bead state",
 
+	// Returns the batched mark statement's TEXT for a planner guard and executes
+	// nothing; the write path that runs it (runMarkBatchedInTx) journals.
+	"BatchedMarkBlockedStatementForIssues": "returns statement text for a plan guard, executes nothing",
+
 	// (3) constituent sub-helpers; the calling entry point journals the whole
 	// mutation once (a create/rename/promote/delete emits a single row).
 	"InsertIssueIntoTable":                   "raw issue insert; the calling create entry point journals the create",

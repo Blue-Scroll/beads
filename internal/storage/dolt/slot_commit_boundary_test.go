@@ -77,7 +77,7 @@ func (c *slotCommitBoundaryConn) QueryContext(_ context.Context, query string, _
 			columns: []string{"metadata"},
 			values:  [][]driver.Value{{c.driver.metadata}},
 		}, nil
-	case strings.Contains(query, "FROM issues") && strings.Contains(query, "LEFT JOIN leases") && strings.Contains(query, "WHERE id = ?"):
+	case strings.Contains(query, "FROM issues") && strings.Contains(query, "leases ON leases.issue_id") && strings.Contains(query, "WHERE id = ?"):
 		if c.driver.activeWisp {
 			return &claimCommitBoundaryRows{columns: claimBoundaryIssueColumns()}, nil
 		}
@@ -85,7 +85,7 @@ func (c *slotCommitBoundaryConn) QueryContext(_ context.Context, query string, _
 			columns: claimBoundaryIssueColumns(),
 			values:  [][]driver.Value{slotBoundaryIssueValues("slot-boundary", c.driver.metadata)},
 		}, nil
-	case strings.Contains(query, "FROM wisps") && strings.Contains(query, "LEFT JOIN leases") && strings.Contains(query, "WHERE id = ?"):
+	case strings.Contains(query, "FROM wisps") && strings.Contains(query, "leases ON leases.issue_id") && strings.Contains(query, "WHERE id = ?"):
 		return &claimCommitBoundaryRows{
 			columns: claimBoundaryIssueColumns(),
 			values:  [][]driver.Value{slotBoundaryIssueValues("slot-boundary", c.driver.metadata)},

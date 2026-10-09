@@ -388,6 +388,26 @@ func shouldBeBlockedIDsUnionSQL(depTable string) string {
 // d.issue_id IN (batch) so the union stays index-sized per statement. scope is
 // spliced verbatim: a %s inside it survives this Sprintf for the batch runner.
 //
+// The four blocks/parent-child legs change SHAPE with the scope, and only
+// the shape: scoped, each reads its dependency rows through a DISTINCT
+// derived table before the target join; unscoped, it joins the bare table.
+// The predicates are the same either way, so the two forms select the same
+// issue_ids. The reason is the Dolt planner, which has no table statistics
+// on a managed server: given `dependencies d JOIN issues t ON t.id =
+// d.depends_on_issue_id WHERE d.issue_id IN (batch)`, it merge-joins the
+// two tables on their indexed join columns and walks EVERY row of both,
+// applying the batch filter afterwards. For one id on a 108k-row
+// dependencies table that was 12.8 s per union, which is the 8 s is_blocked
+// recompute that made `gc sling` half-write under load (vn-cdrw5n3). A
+// derived table cannot be merge-joined, so the planner seeks
+// idx_dependencies_issue for the batch and looks each target up by primary
+// key: 0.2 s. Unscoped, the same barrier is slower (21 s against 14 s for
+// the whole table on the same ledger), because materializing 108k distinct
+// rows and probing issues by PK for each costs more than one merge pass, so
+// the full repair keeps the flat join. The DISTINCT is semantically free
+// (the leg feeds a UNION) and is what makes the barrier structural, as the
+// waits-for leg below explains.
+//
 // The waits-for leg wraps its dependency rows in a DISTINCT derived table
 // BEFORE the gate predicate (waitsForGateBlockedSQL, six correlated EXISTS
 // over the parent-child children and the spawner) is applied, so the engine
@@ -404,39 +424,61 @@ func shouldBeBlockedIDsUnionSQL(depTable string) string {
 //
 //nolint:gosec // G201: depTable and scope are constants; waitsForGateBlockedSQL is a constant template.
 func shouldBeBlockedIDsUnionScopedSQL(depTable, scope string) string {
+	const (
+		blocksType    = "(d.type = 'blocks' OR d.type = 'conditional-blocks')"
+		parentType    = "d.type = 'parent-child'"
+		openTarget    = "t.status <> 'closed' AND t.status <> 'pinned'"
+		blockedParent = "p.is_blocked = 1"
+	)
 	return fmt.Sprintf(`
-		SELECT d.issue_id FROM %[1]s d
-		JOIN issues t ON t.id = d.depends_on_issue_id
-		WHERE d.issue_id IS NOT NULL %[3]s
-		  AND (d.type = 'blocks' OR d.type = 'conditional-blocks')
-		  AND t.status <> 'closed' AND t.status <> 'pinned'
+		%[1]s
 		UNION
-		SELECT d.issue_id FROM %[1]s d
-		JOIN wisps t ON t.id = d.depends_on_wisp_id
-		WHERE d.issue_id IS NOT NULL %[3]s
-		  AND (d.type = 'blocks' OR d.type = 'conditional-blocks')
-		  AND t.status <> 'closed' AND t.status <> 'pinned'
+		%[2]s
 		UNION
-		SELECT d.issue_id FROM %[1]s d
-		JOIN issues p ON p.id = d.depends_on_issue_id
-		WHERE d.issue_id IS NOT NULL %[3]s
-		  AND d.type = 'parent-child'
-		  AND p.is_blocked = 1
+		%[3]s
 		UNION
-		SELECT d.issue_id FROM %[1]s d
-		JOIN wisps p ON p.id = d.depends_on_wisp_id
-		WHERE d.issue_id IS NOT NULL %[3]s
-		  AND d.type = 'parent-child'
-		  AND p.is_blocked = 1
+		%[4]s
 		UNION
 		SELECT d.issue_id FROM (
 		  SELECT DISTINCT d.issue_id, d.depends_on_issue_id, d.depends_on_wisp_id, d.metadata
-		  FROM %[1]s d
-		  WHERE d.issue_id IS NOT NULL %[3]s
+		  FROM %[5]s d
+		  WHERE d.issue_id IS NOT NULL %[7]s
 		    AND d.type = 'waits-for'
 		) d
-		WHERE (%[2]s)
-	`, depTable, waitsForGateBlockedSQL, scope)
+		WHERE (%[6]s)
+	`,
+		blockedTargetLegSQL(depTable, scope, "issues", "t", "depends_on_issue_id", blocksType, openTarget),
+		blockedTargetLegSQL(depTable, scope, "wisps", "t", "depends_on_wisp_id", blocksType, openTarget),
+		blockedTargetLegSQL(depTable, scope, "issues", "p", "depends_on_issue_id", parentType, blockedParent),
+		blockedTargetLegSQL(depTable, scope, "wisps", "p", "depends_on_wisp_id", parentType, blockedParent),
+		depTable, waitsForGateBlockedSQL, scope)
+}
+
+// blockedTargetLegSQL is one blocks or parent-child leg of the should-be-
+// blocked union: the depTable rows of one type (typePred) joined to their
+// target row in targetTable (as targetAlias, through targetCol), kept when
+// targetPred holds. scope is the batch predicate spliced into the dependency
+// WHERE, "" for the whole table. The scoped form reads the dependency rows
+// through a DISTINCT derived table; shouldBeBlockedIDsUnionScopedSQL says
+// why that depends on the scope.
+//
+//nolint:gosec // G201: every argument is a constant from shouldBeBlockedIDsUnionScopedSQL.
+func blockedTargetLegSQL(depTable, scope, targetTable, targetAlias, targetCol, typePred, targetPred string) string {
+	if scope == "" {
+		return fmt.Sprintf(`SELECT d.issue_id FROM %[1]s d
+		JOIN %[2]s %[3]s ON %[3]s.id = d.%[4]s
+		WHERE d.issue_id IS NOT NULL
+		  AND %[5]s
+		  AND %[6]s`, depTable, targetTable, targetAlias, targetCol, typePred, targetPred)
+	}
+	return fmt.Sprintf(`SELECT d.issue_id FROM (
+		  SELECT DISTINCT d.issue_id, d.%[4]s
+		  FROM %[1]s d
+		  WHERE d.issue_id IS NOT NULL %[7]s
+		    AND %[5]s
+		) d
+		JOIN %[2]s %[3]s ON %[3]s.id = d.%[4]s
+		WHERE %[6]s`, depTable, targetTable, targetAlias, targetCol, typePred, targetPred, scope)
 }
 
 // CountIsBlockedInconsistenciesInTx reports how many issue and wisp rows carry a
