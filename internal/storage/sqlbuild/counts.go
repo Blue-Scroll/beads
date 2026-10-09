@@ -91,11 +91,11 @@ func (h CountsHydration) IssueColumns() string {
 // of surviving rows: each per-issue count is a function of the whole dependency
 // graph restricted to that issue, so filtering a subquery's input to ids cannot
 // change any surviving row's count. dep/comment/parent counts are
-// order-insensitive; labels are re-sorted in Go (ScanReadyWorkRowWithCounts).
-// deps_json's element order is whatever JSON_ARRAYAGG emits (SQL does not
-// guarantee one), but it is the same in both forms: restricting the aggregate's
-// input to ids drops only rows for other issues, so the per-issue rows it
-// aggregates — and their relative order — are unchanged.
+// order-insensitive; labels and deps are re-sorted in Go
+// (ScanReadyWorkRowWithCounts). deps_json's element order is whatever
+// JSON_ARRAYAGG emits, and SQL does not guarantee one: on Dolt the two forms
+// handed one row's edges back in different orders (vn-ws7tu8m), which is why
+// the scan sorts them.
 //
 // In the predicate form, whereSQL filters the main table in an inner subquery,
 // BEFORE the aggregate LEFT JOINs. The joins all preserve every main row, so
@@ -140,8 +140,8 @@ func SearchCountsSQL(tables FilterTables, ids []string, whereSQL, orderBySQL, li
 	if byIDs {
 		labelWhere = fmt.Sprintf("WHERE issue_id IN (%s)", inSQL)
 		depBlocksExtra = fmt.Sprintf(" AND issue_id IN (%s)", inSQL)
-		rcDepExtra = fmt.Sprintf(" AND %s IN (%s)", DepTargetExpr, inSQL)
-		rcWispExtra = fmt.Sprintf(" AND %s IN (%s)", DepTargetExpr, inSQL)
+		rcDepExtra = " AND " + depTargetInSQL(inSQL)
+		rcWispExtra = " AND " + depTargetInSQL(inSQL)
 		ccWhere = fmt.Sprintf("WHERE issue_id IN (%s)", inSQL)
 		pcExtra = fmt.Sprintf(" AND issue_id IN (%s)", inSQL)
 		depWhere = fmt.Sprintf("WHERE issue_id IN (%s)", inSQL)
@@ -266,17 +266,22 @@ func SearchCountsSQL(tables FilterTables, ids []string, whereSQL, orderBySQL, li
 	}
 
 	// args follow the placeholder order in sqlText: labels join (unless
-	// skipped), dc, rc dependencies branch, rc wisp branch (if any), cc (all
-	// four unless the counts are skipped), pc, d, then the driver.
-	args := make([]any, 0, len(idArgs)*8)
+	// skipped), dc, rc dependencies branch (three lists), rc wisp branch (three
+	// lists, if any), cc (all of those unless the counts are skipped), pc, d,
+	// then the driver.
+	args := make([]any, 0, len(idArgs)*12)
 	if !hyd.SkipLabels {
 		args = append(args, idArgs...)
 	}
 	if !hyd.SkipCounts {
 		args = append(args, idArgs...) // dc
-		args = append(args, idArgs...) // rc dependencies
+		for range depTargetColumns {
+			args = append(args, idArgs...) // rc dependencies, one per target column
+		}
 		if includeWispReverseDeps {
-			args = append(args, idArgs...) // rc wisp_dependencies
+			for range depTargetColumns {
+				args = append(args, idArgs...) // rc wisp_dependencies, one per target column
+			}
 		}
 		args = append(args, idArgs...) // cc
 	}
@@ -284,4 +289,21 @@ func SearchCountsSQL(tables FilterTables, ids []string, whereSQL, orderBySQL, li
 	args = append(args, idArgs...) // d
 	args = append(args, idArgs...) // driver
 	return sqlText, args
+}
+
+// depTargetColumns are the three mutually exclusive target columns DepTargetExpr
+// COALESCEs. Both dependency tables carry a CHECK that exactly one is non-NULL.
+var depTargetColumns = [...]string{"depends_on_issue_id", "depends_on_wisp_id", "depends_on_external"}
+
+// depTargetInSQL is "DepTargetExpr IN (inSQL)" written so Dolt can use an index.
+//
+// The COALESCE form names no column, so the planner walks every 'blocks' row of
+// the table for each batch of ids (vn-ws7tu8m: about 2 s of a 3.4 s batch of
+// 200 on the town's 108k dependencies). One IN per target column lets each use
+// its own index. The two forms match the same rows because the CHECK above
+// allows exactly one non-NULL target, so the COALESCE IS that one column.
+// The caller binds the ids once per column, in depTargetColumns order.
+func depTargetInSQL(inSQL string) string {
+	return fmt.Sprintf("(%s IN (%s) OR %s IN (%s) OR %s IN (%s))",
+		depTargetColumns[0], inSQL, depTargetColumns[1], inSQL, depTargetColumns[2], inSQL)
 }

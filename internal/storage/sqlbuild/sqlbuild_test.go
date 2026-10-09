@@ -319,8 +319,9 @@ func TestSearchCountsSQLShape(t *testing.T) {
 	}
 
 	// By-IDs form: driver and every subquery are constrained to the ids, and the
-	// arg count matches the placeholder injection points (labels, dc, rc-deps,
-	// rc-wisp, cc, pc, d, driver = 8 for the wisp family with labels).
+	// arg count matches the placeholder injection points (labels, dc, rc-deps x3,
+	// rc-wisp x3, cc, pc, d, driver = 12 for the wisp family with labels). The rc
+	// branches bind the ids once per target column (depTargetInSQL).
 	byIDs, idArgs := SearchCountsSQL(WispsFilterTables, []string{"a", "b"}, "", "", "", true, CountsHydration{})
 	if !strings.Contains(byIDs, "WHERE i.id IN (?,?)") {
 		t.Errorf("by-IDs counts SQL missing driver id filter:\n%s", byIDs)
@@ -334,15 +335,30 @@ func TestSearchCountsSQLShape(t *testing.T) {
 	if strings.Contains(byIDs, "ORDER BY") || strings.Contains(byIDs, "LIMIT") {
 		t.Error("by-IDs counts SQL must not carry ORDER BY / LIMIT (order restored in Go)")
 	}
-	if len(idArgs) != 8*2 {
-		t.Errorf("by-IDs args = %d, want %d", len(idArgs), 8*2)
+	if len(idArgs) != 12*2 {
+		t.Errorf("by-IDs args = %d, want %d", len(idArgs), 12*2)
+	}
+	if got := strings.Count(byIDs, "?"); got != len(idArgs) {
+		t.Errorf("by-IDs SQL has %d placeholders but %d args", got, len(idArgs))
+	}
+	// The reverse-blocker filter names each target column so Dolt can use its
+	// index. "COALESCE(...) IN" names none and walks every blocks row per batch
+	// (vn-ws7tu8m).
+	if strings.Contains(byIDs, DepTargetExpr+" IN (") {
+		t.Errorf("by-IDs rc filter must not be %q IN, it cannot use an index:\n%s", DepTargetExpr, byIDs)
+	}
+	if !strings.Contains(byIDs, "(depends_on_issue_id IN (?,?) OR depends_on_wisp_id IN (?,?) OR depends_on_external IN (?,?))") {
+		t.Errorf("by-IDs rc filter must test each target column:\n%s", byIDs)
 	}
 
 	// skipLabels drops the labels point and !includeWispReverseDeps drops the
-	// rc-wisp point, leaving 6 injection points (dc, rc-deps, cc, pc, d, driver).
-	_, idArgsNoLabels := SearchCountsSQL(IssuesFilterTables, []string{"a", "b"}, "", "", "", false, CountsHydration{SkipLabels: true})
-	if len(idArgsNoLabels) != 6*2 {
-		t.Errorf("by-IDs args (skipLabels, no wisp deps) = %d, want %d", len(idArgsNoLabels), 6*2)
+	// rc-wisp points, leaving 8 (dc, rc-deps x3, cc, pc, d, driver).
+	noLabelsSQL, idArgsNoLabels := SearchCountsSQL(IssuesFilterTables, []string{"a", "b"}, "", "", "", false, CountsHydration{SkipLabels: true})
+	if len(idArgsNoLabels) != 8*2 {
+		t.Errorf("by-IDs args (skipLabels, no wisp deps) = %d, want %d", len(idArgsNoLabels), 8*2)
+	}
+	if got := strings.Count(noLabelsSQL, "?"); got != len(idArgsNoLabels) {
+		t.Errorf("by-IDs SQL (skipLabels, no wisp deps) has %d placeholders but %d args", got, len(idArgsNoLabels))
 	}
 
 	// SkipCounts drops the three cardinality joins and projects constants in

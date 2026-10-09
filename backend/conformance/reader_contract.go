@@ -1776,14 +1776,14 @@ func RunReaderListStatusAcceptsACommaSeparatedORSet(t *testing.T, ctx context.Co
 // IssueWithCounts (reader.go:11-12), and each cardinality is a function of the
 // whole dependency graph rather than of the page, so bounding the page must not
 // be able to move one. That is not free on either seam. The store-backed body
-// answers a BOUNDED request with a different query from an unbounded one: it
-// resolves the page of ids with the cheap indexed query and then hydrates the
-// cardinalities constrained to exactly those ids, where an unbounded request
-// runs the predicate-form mega-query (issueops.runReadyCountsInTx). The
-// unit-of-work body resolves ids first either way — its own UNION across the
-// two planes — and hydrates them by id (domain/db.fetchCountsByIDs). Three
-// wirings, three routes to one promise, and `bd ready`'s "showing N of M" rides
-// on all of them.
+// resolves the ids with the cheap indexed query and then hydrates the
+// cardinalities constrained to exactly those ids, bounded or not, unless the
+// list is wider than issueops.CountsByIDsMaxRows, where it runs the
+// predicate-form mega-query (issueops.runSearchQueryInTx). The unit-of-work
+// body resolves ids first either way — its own UNION across the two planes —
+// and hydrates them by id (domain/db.fetchCountsByIDs). Three wirings, three
+// routes to one promise, and `bd ready`'s "showing N of M" rides on all of
+// them.
 //
 // WHAT THIS FIXTURE MAKES OBSERVABLE that RunReaderReadyLimitBoundary's does
 // not. That case seeds three interchangeable rows and reads only how many came
@@ -1998,7 +1998,7 @@ func RunReaderReadyEphemeralPageKeepsBothPlanesCountsAtItsBoundary(t *testing.T,
 //
 // Neither implementation binds an unbounded id list into one statement: each
 // hydrates a page's cardinalities in batches of two hundred ids and merges the
-// batches in Go — issueops.runReadyCountsInTx against sqlbuild.QueryBatchSize,
+// batches in Go — issueops.hydrateCountsByIDsInTx against sqlbuild.QueryBatchSize,
 // domain/db.fetchCountsByIDs against its own constant of the same value, two
 // loops written separately. A page that fits in one batch cannot tell a working
 // merge from a body that returns only the batch it happened to keep, and no

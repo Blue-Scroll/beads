@@ -37,7 +37,7 @@ func GetReadyWorkWithCountsInTx(ctx context.Context, tx *sql.Tx, filter types.Wo
 	if err != nil {
 		return nil, err
 	}
-	out, err := runReadyCountsInTx(ctx, tx, IssuesFilterTables, filter.Limit, issuePreds, wispDepsExist, readyHydrationFor(filter))
+	out, err := runReadyCountsInTx(ctx, tx, IssuesFilterTables, issuePreds, wispDepsExist, readyHydrationFor(filter))
 	if err != nil {
 		return nil, err
 	}
@@ -57,7 +57,7 @@ func GetReadyWorkWithCountsInTx(ctx context.Context, tx *sql.Tx, filter types.Wo
 	if err != nil {
 		return nil, err
 	}
-	wisps, err := runReadyCountsInTx(ctx, tx, WispsFilterTables, filter.Limit, wispPreds, true, readyHydrationFor(filter))
+	wisps, err := runReadyCountsInTx(ctx, tx, WispsFilterTables, wispPreds, true, readyHydrationFor(filter))
 	if err != nil {
 		if missingOptionalWispTable(err) {
 			return finishReadyWorkWithCounts(out, filter)
@@ -121,79 +121,29 @@ func finishReadyWorkWithCounts(items []*types.IssueWithCounts, filter types.Work
 	return items, nil
 }
 
-// runReadyCountsInTx renders the ready-work counts mega-query for one table
-// family, pushing the page down when the caller bounded it.
+// runReadyCountsInTx renders the ready-work counts read for one table family.
 //
-// For a bounded page (limit > 0) it first resolves the ≤limit ready IDs with the
-// cheap indexed ID query (the same SELECT id … the non-counts GetReadyWork path
-// uses), then hydrates the counts constrained to exactly those IDs. This is what
-// de-quadratics the query: the reverse-blocker subquery rc joins on
+// It is runSearchQueryInTx with the ready predicates: the ids first, through
+// the cheap indexed query, then the counts hydrated for exactly those ids. That
+// is what de-quadratics it: the reverse-blocker subquery rc joins on
 // COALESCE(depends_on_issue_id, …), an expression the pure-Go GMS analyzer
-// cannot auto-index, so the planner re-scans rc's whole materialization once per
-// driver row. Bounding the driver to the page turns that O(candidates × blockers)
-// scan into O(page × blockers). Each per-issue count is a function of the full
-// dependency graph, not of the candidate set, so constraining the driver leaves
-// every emitted count byte-identical to the unbounded mega-query; the page is
-// the same top-N the ORDER BY … LIMIT selected because the ready order ends in a
-// unique `id` tiebreak.
+// cannot auto-index, so the predicate form re-scans rc's whole materialization
+// once per driver row. Bounding the driver to the page turns that
+// O(candidates × blockers) scan into O(page × blockers). The page is the same
+// top-N the ORDER BY … LIMIT selected because the ready order ends in a unique
+// `id` tiebreak.
 //
-// The page IDs are chunked into sqlbuild.QueryBatchSize batches so a large page
-// stays within every backend's per-statement placeholder limit (the by-IDs form
-// binds the page up to eight times) without falling back to the quadratic query.
-//
-// For limit <= 0 (unbounded) there is no page to push down, so it runs the
-// predicate-form mega-query unchanged.
+// It used to do this only for a bounded page and run the mega-query for an
+// unbounded one. An unbounded ready list still has a WHERE, so it narrows just
+// as well (vn-ws7tu8m); runSearchQueryInTx says when it does not.
 //
 // Both callers pass readyHydrationFor(filter), which carries Lite and nothing
 // else: ready work always hydrates labels and cardinalities, because
 // types.WorkFilter carries neither opt-out — the projection that builds it
 // drops both — and issueops.ListRequest says so where a caller reads it,
 // SkipLabels and SkipCounts are not carried onto the ReadyFlag arm.
-//
-//nolint:gosec // G201: whereSQL/orderBySQL/limitSQL are hardcoded fragments; user input rides ? placeholders.
-func runReadyCountsInTx(ctx context.Context, tx *sql.Tx, tables FilterTables, limit int, preds *readyWorkPredicates, includeWispReverseDeps bool, hyd sqlbuild.CountsHydration) ([]*types.IssueWithCounts, error) {
-	if limit <= 0 {
-		return runSearchQueryInTx(ctx, tx, tables, preds.whereSQL, preds.orderBySQL, preds.limitSQL, preds.args, includeWispReverseDeps, hyd)
-	}
-
-	idQuery := fmt.Sprintf("SELECT id FROM %s %s %s %s", tables.Main, preds.whereSQL, preds.orderBySQL, preds.limitSQL)
-	pageIDs, err := queryReadyIssueIDPage(ctx, tx, idQuery, preds.args)
-	if err != nil {
-		return nil, err
-	}
-	if len(pageIDs) == 0 {
-		return nil, nil
-	}
-
-	// Hydrate the counts for the resolved page, chunking the IN-list. The page
-	// IDs are already distinct, so a per-chunk scan needs no cross-chunk dedup.
-	byID := make(map[string]*types.IssueWithCounts, len(pageIDs))
-	for start := 0; start < len(pageIDs); start += sqlbuild.QueryBatchSize {
-		end := start + sqlbuild.QueryBatchSize
-		if end > len(pageIDs) {
-			end = len(pageIDs)
-		}
-		countsSQL, idArgs := sqlbuild.SearchCountsSQL(tables, pageIDs[start:end], "", "", "", includeWispReverseDeps, hyd)
-		rows, scanErr := scanCountsRowsInTx(ctx, tx, tables.Main, countsSQL, idArgs, hyd)
-		if scanErr != nil {
-			return nil, scanErr
-		}
-		for _, r := range rows {
-			if r != nil && r.Issue != nil {
-				byID[r.Issue.ID] = r
-			}
-		}
-	}
-
-	// Restore the ready order the ID query already computed so the result stays
-	// identical to the unbounded mega-query's ORDER BY … LIMIT.
-	ordered := make([]*types.IssueWithCounts, 0, len(pageIDs))
-	for _, id := range pageIDs {
-		if r, ok := byID[id]; ok {
-			ordered = append(ordered, r)
-		}
-	}
-	return ordered, nil
+func runReadyCountsInTx(ctx context.Context, tx *sql.Tx, tables FilterTables, preds *readyWorkPredicates, includeWispReverseDeps bool, hyd sqlbuild.CountsHydration) ([]*types.IssueWithCounts, error) {
+	return runSearchQueryInTx(ctx, tx, tables, preds.whereSQL, preds.orderBySQL, preds.limitSQL, preds.args, includeWispReverseDeps, hyd)
 }
 
 // CountReadyWorkInTx returns the number of ready-work items — identical to
@@ -355,9 +305,9 @@ func ScanReadyWorkRowWithCounts(rows *sql.Rows, hyd sqlbuild.CountsHydration) (*
 	}
 
 	if depsJSON.Valid && depsJSON.String != "" {
-		var deps []*types.Dependency
-		if err := json.Unmarshal([]byte(depsJSON.String), &deps); err != nil {
-			return nil, fmt.Errorf("scan issue with counts: parse deps_json: %w", err)
+		deps, err := decodeCountsDeps(depsJSON.String)
+		if err != nil {
+			return nil, err
 		}
 		issue.Dependencies = deps
 	}
@@ -373,6 +323,27 @@ func ScanReadyWorkRowWithCounts(rows *sql.Rows, hyd sqlbuild.CountsHydration) (*
 		iwc.Parent = &s
 	}
 	return iwc, nil
+}
+
+// decodeCountsDeps parses a counts row's deps_json into its edges, sorted.
+//
+// JSON_ARRAYAGG promises no order, and the order it gives follows the plan: the
+// by-IDs and predicate forms of one list handed the same edges back in
+// different orders (vn-ws7tu8m). So the edges are sorted the way every other
+// dependency read orders them (ORDER BY issue_id, depends_on_id, type), and a
+// row reads the same whichever query built it.
+func decodeCountsDeps(raw string) ([]*types.Dependency, error) {
+	var deps []*types.Dependency
+	if err := json.Unmarshal([]byte(raw), &deps); err != nil {
+		return nil, fmt.Errorf("scan issue with counts: parse deps_json: %w", err)
+	}
+	sort.SliceStable(deps, func(a, b int) bool {
+		if deps[a].DependsOnID != deps[b].DependsOnID {
+			return deps[a].DependsOnID < deps[b].DependsOnID
+		}
+		return deps[a].Type < deps[b].Type
+	})
+	return deps, nil
 }
 
 type compositeReadyRow struct {

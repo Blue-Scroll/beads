@@ -132,8 +132,8 @@ func readyHydrationFor(filter types.WorkFilter) sqlbuild.CountsHydration {
 // not hand-build an id predicate for the predicate form: that form renders
 // whereSQL inside a derived subquery, so a caller-written "i."-qualified
 // clause would silently couple to the subquery's internal alias. The IDs are
-// chunked so the by-IDs form's up-to-eightfold placeholder binding stays
-// within per-statement limits (mirrors issueops.runReadyCountsInTx).
+// chunked so the by-IDs form's up-to-twelvefold placeholder binding stays
+// within per-statement limits (mirrors issueops.hydrateCountsByIDsInTx).
 func (r *issueSQLRepositoryImpl) fetchCountsByIDs(ctx context.Context, ids []string, tables filterTables, includeWispReverseDeps bool, hyd sqlbuild.CountsHydration) (map[string]*types.IssueWithCounts, error) {
 	out := make(map[string]*types.IssueWithCounts, len(ids))
 	for start := 0; start < len(ids); start += queryBatchSize {
@@ -169,10 +169,65 @@ func (r *issueSQLRepositoryImpl) runFilterSearchQuery(ctx context.Context, query
 	return r.runSearchQuery(ctx, tables, whereSQL, orderBy, searchWindowForFilter(filter).sql, args, includeWispReverseDeps, hydrationFor(filter))
 }
 
+// runSearchQuery reads the ids first and hydrates the counts for just those
+// ids, the same two reads as issueops.runSearchQueryInTx, which says why
+// (vn-ws7tu8m) and when the predicate-form mega-query is kept instead.
+//
 //nolint:gosec // G201: SQL fragments are built from hardcoded table names and parameterized filters.
 func (r *issueSQLRepositoryImpl) runSearchQuery(ctx context.Context, tables filterTables, whereSQL, orderBySQL, limitSQL string, args []any, includeWispReverseDeps bool, hyd sqlbuild.CountsHydration) ([]*types.IssueWithCounts, error) {
+	if whereSQL == "" && limitSQL == "" {
+		return r.runCountsMegaQuery(ctx, tables, whereSQL, orderBySQL, limitSQL, args, includeWispReverseDeps, hyd)
+	}
+
+	ids, err := r.queryIDs(ctx, fmt.Sprintf("SELECT i.id FROM %s i %s %s %s", tables.Main, whereSQL, orderBySQL, limitSQL), args)
+	if err != nil {
+		return nil, fmt.Errorf("search count %s: id page: %w", tables.Main, err)
+	}
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	if len(ids) > issueops.CountsByIDsMaxRows {
+		return r.runCountsMegaQuery(ctx, tables, whereSQL, orderBySQL, limitSQL, args, includeWispReverseDeps, hyd)
+	}
+
+	byID, err := r.fetchCountsByIDs(ctx, ids, tables, includeWispReverseDeps, hyd)
+	if err != nil {
+		return nil, err
+	}
+	ordered := make([]*types.IssueWithCounts, 0, len(ids))
+	for _, id := range ids {
+		if iwc, ok := byID[id]; ok {
+			ordered = append(ordered, iwc)
+		}
+	}
+	return ordered, nil
+}
+
+// runCountsMegaQuery runs the predicate form of the counts mega-query. Only
+// runSearchQuery calls it, for the two cases it names.
+//
+//nolint:gosec // G201: SQL fragments are built from hardcoded table names and parameterized filters.
+func (r *issueSQLRepositoryImpl) runCountsMegaQuery(ctx context.Context, tables filterTables, whereSQL, orderBySQL, limitSQL string, args []any, includeWispReverseDeps bool, hyd sqlbuild.CountsHydration) ([]*types.IssueWithCounts, error) {
 	searchSQL, _ := sqlbuild.SearchCountsSQL(tables, nil, whereSQL, orderBySQL, limitSQL, includeWispReverseDeps, hyd)
 	return r.scanCountsQuery(ctx, tables, searchSQL, args, hyd)
+}
+
+// queryIDs runs a one-column id query and returns the ids in row order.
+func (r *issueSQLRepositoryImpl) queryIDs(ctx context.Context, query string, args []any) ([]string, error) {
+	rows, err := r.runner.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scan id: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
 }
 
 // scanCountsQuery runs a prebuilt counts mega-query and hydrates each row,
