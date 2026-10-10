@@ -25,6 +25,10 @@ import (
 // Dolt chose LeftOuterMergeJoin over a full PK walk of issues and ran the
 // JSON probe on every row (71k rows, 20 s on one ledger); LeaseJoin's
 // derived table removes the merge option.
+//
+// The key is gc.routed_to, which has no generated column, so the status
+// index is the only one the plan can earn. gc.root_bead_id has its own
+// index (vn-s54d6fy) and its own test below.
 func TestIterIssuesListPlanKeepsStatusIndex(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
@@ -35,7 +39,7 @@ func TestIterIssuesListPlanKeepsStatusIndex(t *testing.T) {
 
 	filter := types.IssueFilter{
 		Statuses:       []types.Status{types.StatusOpen, types.StatusInProgress},
-		MetadataFields: map[string]string{"gc.root_bead_id": "pl-list-root"},
+		MetadataFields: map[string]string{"gc.routed_to": "pl-list-pool"},
 	}
 	where, args, err := issueops.BuildIssueFilterClauses("", filter, issueops.IssuesFilterTables)
 	if err != nil {
@@ -55,6 +59,43 @@ func TestIterIssuesListPlanKeepsStatusIndex(t *testing.T) {
 	}
 	if !statusIndexSeek.MatchString(plan) {
 		t.Fatalf("issues list does not seek an index on issues.status.\nplan:\n%s", plan)
+	}
+}
+
+// TestIterIssuesRootMembersPlanSeeksRootIndex is the gc DirectMembers shape
+// (vn-s54d6fy): every bead whose gc.root_bead_id is one root, closed
+// included, so no status filter can narrow it. Before migration 0067 this was
+// a full scan with a JSON probe per row (10 to 15 s on a 71k-row ledger). It
+// must now seek idx_issues_gc_root_bead_id, and never merge-join leases.
+func TestIterIssuesRootMembersPlanSeeksRootIndex(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+	ctx, cancel := testContext(t)
+	defer cancel()
+
+	seedPlanIssues(t, store, "pl-root", 40)
+
+	filter := types.IssueFilter{
+		MetadataFields: map[string]string{"gc.root_bead_id": "pl-root-0"},
+	}
+	where, args, err := issueops.BuildIssueFilterClauses("", filter, issueops.IssuesFilterTables)
+	if err != nil {
+		t.Fatalf("build filter: %v", err)
+	}
+	prod := iterIssuesSQL("WHERE "+strings.Join(where, " AND "), "")
+	lits := make([]string, len(args))
+	for i, a := range args {
+		lits[i] = fmt.Sprintf("'%v'", a)
+	}
+	plan := explainPlan(t, ctx, store.db, literalizeParams(prod, lits...))
+	if !looksLikeDoltPlan(plan) {
+		t.Skipf("EXPLAIN output not in a recognized Dolt plan format, skipping plan assertion; plan=\n%s", plan)
+	}
+	if strings.Contains(plan, "MergeJoin") {
+		t.Fatalf("root-members list merge-joins leases.\nplan:\n%s", plan)
+	}
+	if !strings.Contains(plan, "index: [issues.gc_root_bead_id]") {
+		t.Fatalf("root-members list does not seek idx_issues_gc_root_bead_id; that is a full scan with a JSON probe per row.\nplan:\n%s", plan)
 	}
 }
 

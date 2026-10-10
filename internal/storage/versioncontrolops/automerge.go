@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/steveyegge/beads/internal/storage/issueops"
+	"github.com/steveyegge/beads/internal/storage/sqlbuild"
 )
 
 // Domain-aware auto-merge (federation ask #1, the flagship).
@@ -187,8 +188,10 @@ func declineDuplicateConflictRows(table string, keyCols []string, rows []rawConf
 	return true
 }
 
-// dataColumns returns the row's data column names (conflict metadata and the
-// named excluded columns dropped), in conflict-table order and de-duplicated.
+// dataColumns returns the row's data column names (conflict metadata, the
+// named excluded columns and generated columns dropped), in conflict-table
+// order and de-duplicated. A generated column cannot be written; it follows
+// the column it is computed from (gc_root_bead_id follows metadata).
 // A column is only reported when the row actually carries a value for it on
 // every side that matters; callers read the sides they need with value().
 func (r rawConflictRow) dataColumns(exclude ...string) []string {
@@ -200,7 +203,7 @@ func (r rawConflictRow) dataColumns(exclude ...string) []string {
 	var out []string
 	for _, c := range r.cols {
 		side, field, ok := splitConflictColumn(c)
-		if !ok || side != "our" || conflictMetaSuffixes[field] || skip[field] || seen[field] {
+		if !ok || side != "our" || conflictMetaSuffixes[field] || skip[field] || seen[field] || sqlbuild.IsGeneratedColumn(field) {
 			continue
 		}
 		seen[field] = true

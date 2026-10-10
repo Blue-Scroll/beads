@@ -863,3 +863,21 @@ func TestFreshRowLockDistinctFrom(t *testing.T) {
 		}
 	}
 }
+
+// TestDataColumnsSkipsGeneratedColumn: the auto-merge plan must never name
+// gc_root_bead_id (vn-s54d6fy), or every theirs-only metadata change to that
+// key would fail its UPDATE. The column follows metadata.
+func TestDataColumnsSkipsGeneratedColumn(t *testing.T) {
+	row := rawConflictRow{
+		cols: []string{
+			"our_id", "their_id",
+			"our_metadata", "their_metadata",
+			"our_gc_root_bead_id", "their_gc_root_bead_id",
+		},
+		vals: make([]any, 6),
+	}
+	got := row.dataColumns("id")
+	if len(got) != 1 || got[0] != "metadata" {
+		t.Fatalf("dataColumns = %v, want only [metadata]", got)
+	}
+}

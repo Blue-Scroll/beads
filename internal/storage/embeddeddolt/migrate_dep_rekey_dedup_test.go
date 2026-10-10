@@ -38,16 +38,23 @@ import (
 // pending state forces the one repair pass.
 const depRekeyMarkerVersion = 26
 
+// depRekeyCheckedLatestIgnored is the highest ignored migration checked
+// against these fixtures. Ignored 0027 (town-only, vn-s54d6fy) is guarded DDL
+// on wisps: unrecordIgnoredVersionsFrom(26) unrecords it too, and its re-run
+// is a no-op that leaves the 0026 marker pending exactly as before.
+const depRekeyCheckedLatestIgnored = 27
+
 // TestDepRekeyMarkerIsLatestIgnored keeps the fixtures in this file honest. They
 // force the repair pass by unrecording the marker, which only works while the
 // pass is genuinely pending afterwards. If a later ignored migration lands, this
 // fails first with an actionable message instead of the marker-driven tests
 // failing with assertions that indict the repair code.
 func TestDepRekeyMarkerIsLatestIgnored(t *testing.T) {
-	if got := schema.LatestIgnoredVersion(); got != depRekeyMarkerVersion {
-		t.Fatalf("latest ignored migration is %d, not the dep-rekey marker %d; "+
-			"if you added ignored %d, point depRekeyMarkerVersion at 0026 anyway and confirm "+
-			"unrecordIgnoredVersionsFrom still leaves the marker pending", got, depRekeyMarkerVersion, got)
+	if got := schema.LatestIgnoredVersion(); got != depRekeyCheckedLatestIgnored {
+		t.Fatalf("latest ignored migration is %d, not %d, the last one checked against the dep-rekey marker %d; "+
+			"if you added ignored %d, keep depRekeyMarkerVersion at 0026, confirm "+
+			"unrecordIgnoredVersionsFrom still leaves the marker pending, then raise depRekeyCheckedLatestIgnored",
+			got, depRekeyCheckedLatestIgnored, depRekeyMarkerVersion, got)
 	}
 }
 

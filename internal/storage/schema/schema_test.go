@@ -1959,6 +1959,10 @@ func TestAllMigrationsSQLUsesDirectDDLForKnownCLIIncompatibilities(t *testing.T)
 		"ALTER TABLE wisp_comments MODIFY COLUMN text LONGTEXT NOT NULL;",
 		// 0066: same prepared-ALTER shape as 0060, same CLI no-op on 2.2.x.
 		"ALTER TABLE bd_events_journal ADD COLUMN actor VARCHAR(255) NOT NULL DEFAULT '';",
+		// 0067 (town-only): same prepared-ALTER shape as 0060.
+		"CREATE INDEX idx_issues_gc_root_bead_id ON issues (gc_root_bead_id);",
+		"CREATE INDEX idx_wisps_gc_root_bead_id ON wisps (gc_root_bead_id);",
+		`ALTER TABLE issues ADD COLUMN gc_root_bead_id VARCHAR(255) GENERATED ALWAYS AS (LEFT(JSON_UNQUOTE(JSON_EXTRACT(metadata, '$."gc.root_bead_id"')), 255)) STORED;`,
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("AllMigrationsSQL missing direct CLI DDL %q", want)
@@ -1980,6 +1984,8 @@ func TestAllMigrationsSQLUsesDirectDDLForKnownCLIIncompatibilities(t *testing.T)
 		// 0066 guards its ALTER the same way; only its source text carries
 		// this probe (the events table's actor column is a bare CREATE).
 		"COLUMN_NAME = 'actor'",
+		// 0067's guard probe; only its source text carries it.
+		"COLUMN_NAME = 'gc_root_bead_id'",
 	} {
 		if strings.Contains(got, forbidden) {
 			t.Fatalf("AllMigrationsSQL contains source prepared-DDL guard %q", forbidden)

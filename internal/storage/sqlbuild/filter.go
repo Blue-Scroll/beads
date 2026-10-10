@@ -343,8 +343,46 @@ func BuildIssueFilterClauses(query string, filter types.IssueFilter, tables Filt
 	return whereClauses, args, nil
 }
 
+// indexedMetadataColumns maps a metadata key to the STORED generated column
+// that copies it out of the JSON so it can carry an index (vn-s54d6fy). A
+// field match on one of these keys adds `<column> = ?` beside its JSON
+// predicate, which turns a full-table JSON probe into an index lookup.
+//
+// The JSON predicate always stays. The column holds at most
+// indexedMetadataColumnWidth characters (the migration truncates with LEFT so
+// a long value can never fail a write), so it only narrows the rows; the JSON
+// predicate is still the exact match.
+//
+// Adding a key here needs the column and its index on BOTH planes first: a
+// main-series migration for issues and wisps, its ignored-series twin for
+// wisps, and a cliCompatibleMigrationSQL override. Otherwise every filter on
+// that key fails with Error 1054. 0067 / ignored 0027 is the worked example.
+var indexedMetadataColumns = map[string]string{
+	"gc.root_bead_id": "gc_root_bead_id",
+}
+
+// indexedMetadataColumnWidth is the LEFT(..., n) width every column in
+// indexedMetadataColumns is generated with.
+const indexedMetadataColumnWidth = 255
+
+// IsGeneratedColumn reports whether name is a STORED generated column on
+// issues/wisps. The engine computes it from other columns and refuses any
+// write to it, so code that copies a row column by column (a merge or
+// conflict write-back) must skip it; it follows the source column it is
+// generated from.
+func IsGeneratedColumn(name string) bool {
+	for _, column := range indexedMetadataColumns {
+		if column == name {
+			return true
+		}
+	}
+	return false
+}
+
 // AppendMetadataClauses appends JSON metadata predicates (has-key and exact
-// field matches, keys in sorted order) to an existing clause/arg list.
+// field matches, keys in sorted order) to an existing clause/arg list. The
+// clauses name bare `metadata` (and, for an indexed key, its generated column),
+// so they belong to a query over the issues or wisps table.
 func AppendMetadataClauses(where []string, args []any, hasKey string, fields map[string]string) ([]string, []any, error) {
 	if hasKey != "" {
 		if err := storage.ValidateMetadataKey(hasKey); err != nil {
@@ -363,11 +401,28 @@ func AppendMetadataClauses(where []string, args []any, hasKey string, fields map
 			if err := storage.ValidateMetadataKey(k); err != nil {
 				return nil, nil, err
 			}
+			if column, ok := indexedMetadataColumns[k]; ok {
+				where = append(where, column+" = ?")
+				args = append(args, truncateRunes(fields[k], indexedMetadataColumnWidth))
+			}
 			where = append(where, "JSON_UNQUOTE(JSON_EXTRACT(metadata, ?)) = ?")
 			args = append(args, storage.JSONMetadataPath(k), fields[k])
 		}
 	}
 	return where, args, nil
+}
+
+// truncateRunes cuts s to at most n characters, the way SQL LEFT(s, n) does on
+// a utf8mb4 string, so a bound value matches what the generated column stored.
+func truncateRunes(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n])
 }
 
 // globToLikePattern converts a shell-style glob (* and ?) to a SQL LIKE

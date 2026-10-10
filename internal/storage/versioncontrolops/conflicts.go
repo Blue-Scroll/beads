@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/steveyegge/beads/internal/storage"
+	"github.com/steveyegge/beads/internal/storage/sqlbuild"
 )
 
 // This file backs `bd conflicts` (federation ask #3): the issue-oriented view
@@ -285,12 +286,13 @@ func (r rawConflictRow) value(side, field string) (any, bool) {
 	return nil, false
 }
 
-// theirFields returns their_* data columns (metadata and the key column
-// excluded) in conflict-table order.
+// theirFields returns their_* data columns (metadata, the key column and
+// generated columns excluded) in conflict-table order. A generated column
+// cannot be written; it follows the metadata value written beside it.
 func (r rawConflictRow) theirFields(keyCol string) (names []string, vals []any) {
 	for i, c := range r.cols {
 		side, field, ok := splitConflictColumn(c)
-		if !ok || side != "their" || conflictMetaSuffixes[field] || field == keyCol {
+		if !ok || side != "their" || conflictMetaSuffixes[field] || field == keyCol || sqlbuild.IsGeneratedColumn(field) {
 			continue
 		}
 		names = append(names, field)

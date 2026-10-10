@@ -259,3 +259,17 @@ func TestResolveOneConflictRowZeroAffectedRows(t *testing.T) {
 		}
 	})
 }
+
+// TestTheirFieldsSkipsGeneratedColumn: a --theirs resolve must not write
+// gc_root_bead_id (vn-s54d6fy). It is a STORED generated column, the engine
+// refuses any write to it, and it follows the metadata written beside it.
+func TestTheirFieldsSkipsGeneratedColumn(t *testing.T) {
+	raw := rawConflictRow{
+		cols: []string{"our_id", "their_id", "their_metadata", "their_gc_root_bead_id"},
+		vals: []any{[]byte("bd-1"), []byte("bd-1"), []byte(`{"gc.root_bead_id":"r"}`), []byte("r")},
+	}
+	names, _ := raw.theirFields("id")
+	if len(names) != 1 || names[0] != "metadata" {
+		t.Fatalf("theirFields = %v, want only [metadata]", names)
+	}
+}

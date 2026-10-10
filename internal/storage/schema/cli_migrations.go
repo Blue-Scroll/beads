@@ -126,6 +126,13 @@ func cliCompatibleMigrationSQL(name, sqlText string) string {
 		// itself is always present here: 0064's prepared RENAME executes on
 		// 2.2.0 (same measurement), so a fresh bundle always needs the column.
 		return cliMigration0066AddEventsJournalActor
+	case "0067_index_gc_root_bead_id.up.sql":
+		// Direct DDL for the same reason as 0060: the source migration guards
+		// each ALTER with PREPARE for idempotent re-runs, and the 2.2.x CLI
+		// no-ops a prepared ADD COLUMN. Both planes are always present here
+		// (0060 makes the same presumption), so a fresh bundle always needs
+		// the column and index on each.
+		return cliMigration0067IndexGCRootBeadID
 	default:
 		return sqlText
 	}
@@ -401,3 +408,11 @@ WHERE w.issue_type = 'rig';
 DELETE FROM wisps WHERE issue_type = 'rig';
 
 SET FOREIGN_KEY_CHECKS = 1;`
+
+// cliMigration0067IndexGCRootBeadID must carry the same column definition as
+// 0067's source text and ignored/0027; TestCLIBundleMatchesRuntimeCommittedSchema
+// is the oracle that compares them.
+const cliMigration0067IndexGCRootBeadID = `ALTER TABLE issues ADD COLUMN gc_root_bead_id VARCHAR(255) GENERATED ALWAYS AS (LEFT(JSON_UNQUOTE(JSON_EXTRACT(metadata, '$."gc.root_bead_id"')), 255)) STORED;
+CREATE INDEX idx_issues_gc_root_bead_id ON issues (gc_root_bead_id);
+ALTER TABLE wisps ADD COLUMN gc_root_bead_id VARCHAR(255) GENERATED ALWAYS AS (LEFT(JSON_UNQUOTE(JSON_EXTRACT(metadata, '$."gc.root_bead_id"')), 255)) STORED;
+CREATE INDEX idx_wisps_gc_root_bead_id ON wisps (gc_root_bead_id);`
