@@ -1989,6 +1989,17 @@ type IssueFilter struct {
 	// wisps can live in the issues table. nil = no tier constraint.
 	EphemeralTier *bool
 
+	// ExcludeWispPlane drops every row the wisps plane owns, by the same line
+	// `bd export` draws with its "wisp_plane" marker: an ephemeral row in
+	// either table, and a no-history row stored in the wisps table. It keeps
+	// the two shapes Ephemeral=&false and EphemeralTier=&false cannot tell
+	// apart from those: a wisps-table row that is neither ephemeral nor
+	// no-history (an infra or typed bead), and a no-history row in the issues
+	// table (a promoted bead still carrying the flag), which is durable.
+	// It exists so a caller that drops those rows anyway, such as an archive
+	// export, does not read the whole wisps table first. false = no constraint.
+	ExcludeWispPlane bool
+
 	// Pinned filtering
 	Pinned *bool // Filter by pinned flag (nil = any, true = only pinned, false = only non-pinned)
 

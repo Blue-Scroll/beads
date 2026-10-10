@@ -600,3 +600,41 @@ func TestBuildIssueFilterClauses_EphemeralTierFilter(t *testing.T) {
 		})
 	}
 }
+
+func TestBuildIssueFilterClauses_ExcludeWispPlane(t *testing.T) {
+	t.Parallel()
+
+	// The same line bd export's "wisp_plane" marker draws: ephemeral rows go
+	// on both tables, no-history rows only where the wisps table stores them.
+	// A no-history row in the issues table is a promoted, durable bead and
+	// must survive (vn-79smm01).
+	for _, tt := range []struct {
+		name   string
+		tables FilterTables
+		want   []string
+	}{
+		{"issues table", IssuesFilterTables, []string{"(ephemeral = 0 OR ephemeral IS NULL)"}},
+		{"wisps table", WispsFilterTables, []string{"(ephemeral = 0 OR ephemeral IS NULL)", "(no_history = 0 OR no_history IS NULL)"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			clauses, args, err := BuildIssueFilterClauses("", types.IssueFilter{ExcludeWispPlane: true}, tt.tables)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if strings.Join(clauses, " AND ") != strings.Join(tt.want, " AND ") {
+				t.Errorf("clauses = %q, want %q", clauses, tt.want)
+			}
+			if len(args) != 0 {
+				t.Errorf("expected no args, got %d: %v", len(args), args)
+			}
+		})
+	}
+
+	clauses, _, err := BuildIssueFilterClauses("", types.IssueFilter{}, WispsFilterTables)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(clauses) != 0 {
+		t.Errorf("the zero filter must add no clause, got %q", clauses)
+	}
+}

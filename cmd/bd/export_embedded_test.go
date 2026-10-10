@@ -119,6 +119,64 @@ func TestEmbeddedExport(t *testing.T) {
 		}
 	})
 
+	// --exclude-wisp-plane must leave out exactly the rows an archive drops
+	// from an --all export (ephemeral, or stamped wisp_plane) and nothing
+	// else, so a caller can push that drop into SQL without changing its
+	// output (vn-79smm01).
+	t.Run("exclude_wisp_plane", func(t *testing.T) {
+		dir, _, _ := bdInit(t, bd, "--prefix", "exwp")
+		durable := bdCreateSilent(t, bd, dir, "durable issue")
+		ephemeral := bdCreateSilent(t, bd, dir, "ephemeral wisp", "--ephemeral")
+		noHistory := bdCreateSilent(t, bd, dir, "no-history wisp", "--no-history")
+
+		type row struct {
+			ID        string `json:"id"`
+			Type      string `json:"_type"`
+			Ephemeral bool   `json:"ephemeral"`
+			WispPlane bool   `json:"wisp_plane"`
+		}
+		issueRows := func(out string) map[string]row {
+			rows := map[string]row{}
+			for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+				if strings.TrimSpace(line) == "" {
+					continue
+				}
+				var r row
+				if err := json.Unmarshal([]byte(line), &r); err != nil {
+					t.Fatalf("export line is not JSON: %v\n%s", err, line)
+				}
+				if r.Type == "" || r.Type == "issue" {
+					rows[r.ID] = r
+				}
+			}
+			return rows
+		}
+
+		all := issueRows(bdExport(t, bd, dir, "--all"))
+		kept := issueRows(bdExport(t, bd, dir, "--all", "--exclude-wisp-plane"))
+
+		for _, id := range []string{durable, ephemeral, noHistory} {
+			if _, ok := all[id]; !ok {
+				t.Fatalf("--all export is missing %s; the fixture no longer exercises the filter", id)
+			}
+		}
+		if !all[ephemeral].Ephemeral || !all[noHistory].WispPlane {
+			t.Fatalf("fixture rows lost their markers: ephemeral=%+v noHistory=%+v", all[ephemeral], all[noHistory])
+		}
+
+		for id, r := range all {
+			wantKept := !r.Ephemeral && !r.WispPlane
+			if _, got := kept[id]; got != wantKept {
+				t.Errorf("%s (ephemeral=%v wisp_plane=%v): kept=%v, want %v", id, r.Ephemeral, r.WispPlane, got, wantKept)
+			}
+		}
+		for id := range kept {
+			if _, ok := all[id]; !ok {
+				t.Errorf("--exclude-wisp-plane exported %s, which --all did not", id)
+			}
+		}
+	})
+
 	t.Run("include_infra", func(t *testing.T) {
 		dir, _, _ := bdInit(t, bd, "--prefix", "exinfra")
 		bdCreateSilent(t, bd, dir, "regular issue for infra test")

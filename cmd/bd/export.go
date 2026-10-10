@@ -53,14 +53,15 @@ EXAMPLES:
 }
 
 var (
-	exportOutput          string
-	exportAll             bool
-	exportIncludeInfra    bool
-	exportScrub           bool
-	exportNoMemories      bool
-	exportIncludeMemories bool
-	exportExcludeOwners   []string
-	exportVerbose         bool
+	exportOutput           string
+	exportAll              bool
+	exportIncludeInfra     bool
+	exportScrub            bool
+	exportNoMemories       bool
+	exportIncludeMemories  bool
+	exportExcludeOwners    []string
+	exportVerbose          bool
+	exportExcludeWispPlane bool
 )
 
 func init() {
@@ -73,6 +74,7 @@ func init() {
 	_ = exportCmd.Flags().MarkHidden("no-memories")
 	exportCmd.Flags().StringArrayVar(&exportExcludeOwners, "exclude-owner", nil, "Exclude issues created by this identity (repeatable; also reads export.exclude_owners config)")
 	exportCmd.Flags().BoolVar(&exportVerbose, "verbose", false, "Print filtered issue count when owners are excluded")
+	exportCmd.Flags().BoolVar(&exportExcludeWispPlane, "exclude-wisp-plane", false, "Leave out wisps-plane rows (ephemeral, and no-history rows in the wisps table), even with --all")
 	rootCmd.AddCommand(exportCmd)
 }
 
@@ -168,6 +170,11 @@ func runExportFromSource(ctx context.Context, src exportSource) error {
 		persistentOnly := false
 		filter.Ephemeral = &persistentOnly
 	}
+
+	// --exclude-wisp-plane leaves out, in SQL, the rows an archive drops
+	// anyway: without it --all reads every wisps row in full, and on a busy
+	// city that is most of the database (vn-79smm01).
+	filter.ExcludeWispPlane = exportExcludeWispPlane
 
 	issues, err := src.SearchIssues(ctx, "", filter)
 	if err != nil {

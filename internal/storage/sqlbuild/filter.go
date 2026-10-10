@@ -250,6 +250,15 @@ func BuildIssueFilterClauses(query string, filter types.IssueFilter, tables Filt
 			whereClauses = append(whereClauses, "((ephemeral = 0 OR ephemeral IS NULL) AND (wisp_type = '' OR wisp_type IS NULL))")
 		}
 	}
+	if filter.ExcludeWispPlane {
+		// Two clauses, and only the first is table-independent: a no-history
+		// row is wisps-plane only where it is stored in the wisps table
+		// (types.IssueFilter.ExcludeWispPlane).
+		whereClauses = append(whereClauses, "(ephemeral = 0 OR ephemeral IS NULL)")
+		if tables.Main == WispsFilterTables.Main {
+			whereClauses = append(whereClauses, "(no_history = 0 OR no_history IS NULL)")
+		}
+	}
 	if filter.IsTemplate != nil {
 		if *filter.IsTemplate {
 			whereClauses = append(whereClauses, "is_template = 1")
